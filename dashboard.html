@@ -688,13 +688,29 @@ async function approveAction(){
   const steps=[];
   if(res.reroute_confirmed && !_skippedActions.has('reroute')&&!_skippedActions.has('swap')&&!_skippedActions.has('carrier')&&!_skippedActions.has('flight'))
     steps.push(['success','&#10003; Route Updated','New route confirmed and active.']);
-  if(res.rescheduled_count>0 && !_skippedActions.has('reschedule'))
-    steps.push(['info','&#128197; Patients Rescheduled',
-      `<b>${res.rescheduled_count}</b> appointment(s) at <b>${selected?.destination_hospital||'hospital'}</b> rescheduled.`]);
+  if(res.rescheduled_count>0 && !_skippedActions.has('reschedule')){
+    // Extract patient names from notifications_sent if present
+    let patientDetail = `<b>${res.rescheduled_count}</b> appointment(s) at <b>${selected?.destination_hospital||'hospital'}</b> affected.`;
+    try{
+      const notifs=JSON.parse(res.notifications_sent||'[]');
+      const schedMsg=notifs.find(n=>n.includes('Scheduling Desk')||n.includes('appointment'));
+      if(schedMsg){
+        const body=schedMsg.split('|').slice(1).join('|').trim();
+        if(body) patientDetail=body;
+      }
+    }catch{}
+    steps.push(['info','&#128197; Patients Rescheduled', patientDetail]);
+  }
   if(res.insurance_doc_url && !_skippedActions.has('insurance'))
     steps.push(['info','&#128196; Insurance Claim Filed',`Ref: <code>${res.insurance_doc_url}</code>`]);
-  if(res.inventory_forecast_updated && !_skippedActions.has('notify'))
-    steps.push(['success','&#128202; Inventory Forecast Updated',`${selected?.destination_hospital||'Hospital'} supply forecast adjusted.`]);
+  if(res.inventory_forecast_updated && !_skippedActions.has('notify')){
+    // Extract inventory note from risk_narrative
+    let invDetail=`${selected?.destination_hospital||'Hospital'} supply forecast adjusted.`;
+    const narr=res.risk_narrative||'';
+    const idx=narr.indexOf('| INVENTORY');
+    if(idx>=0) invDetail=narr.slice(idx+2,idx+180).replace(/\|.*/,'').trim();
+    steps.push(['success','&#128202; Inventory Forecast Updated', invDetail]);
+  }
   if(res.audit_log_id)
     steps.push(['success','&#128196; Compliance Log',`<code>${res.audit_log_id}</code> · FDA 21 CFR Part 11`]);
 
@@ -710,6 +726,12 @@ async function approveAction(){
             addFeed('success','&#128276; Notified',
               `<b>${parts[0]?.trim()||'Stakeholder'}</b>${parts[1]?': '+parts[1].trim():''}`)
           },(k+1)*250));
+          // Email sent badge
+          setTimeout(()=>{
+            addFeed('success','&#128231; Email Dispatched',
+              `AI-generated alert sent to <b>jbha0504@umd.edu</b> — subject &amp; body written by Claude Haiku. `+
+              `<span style="color:var(--t3);font-size:11px">Set EMAIL_FROM + EMAIL_PASSWORD env vars to activate real SMTP delivery.</span>`);
+          },(notifs.length+1)*250);
         }catch{}
       }
       setTimeout(()=>{

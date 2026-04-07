@@ -48,6 +48,7 @@ from cargo_monitor_workflow import (
     write_audit_log,
     compliance_logger,
     route_compliance,
+    ai_fallback_agent,
 )
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -152,6 +153,27 @@ SCENARIOS = {
             "temp_range_min": 2.0, "temp_range_max": 8.0,
         },
     },
+    "earthquake_disruption": {
+        "title": "Earthquake Disruption at DXB Transit Hub (SHP-005)",
+        "description": "Earthquake reported near Dubai hub — automated rules can't classify risk, Claude AI decides",
+        "reading": {
+            "shipment_id": "SHP-005", "timestamp": "2026-04-07T08:00:00+00:00",
+            "elapsed_hrs": 18.0, "leg": "transit_hub_hold", "leg_mode": "airport",
+            "temp_c": 6.8, "humidity_pct": 82.0, "shock_g": 0.4, "door_open": False,
+            "lat": 25.2532, "lng": 55.3657, "speed_kmh": 0.0, "heading": 0.0,
+            "carrier_id": "EK_CARGO_01", "battery_pct": 55.0,
+            "flight_status": "DELAYED", "customs_status": "PENDING",
+            "eta_delta_hrs": 3.5, "ambient_temp_c": 38.0,
+            "route_alerts": "EARTHQUAKE 4.2 magnitude reported near DXB terminal 3",
+            "airport_conditions": "Partial terminal evacuation, cold storage access restricted",
+            "vaccine_type": "standard_flu", "viability_window_hrs": 96.0,
+            "pack_time": "2026-04-06T14:00:00+00:00",
+            "destination_hospital": "NYC General Hospital",
+            "origin_airport": "BOM", "dest_airport": "JFK", "transit_hub": "DXB",
+            "insurance_days": 4,
+            "temp_range_min": 2.0, "temp_range_max": 8.0,
+        },
+    },
     "flight_cancel": {
         "title": "Flight Cancelled at BOM (SHP-008)",
         "description": "Cargo flight BOM->DXB cancelled, vaccine sitting on tarmac",
@@ -188,6 +210,7 @@ ACTION_ROUTER = {
     "SENSOR_SILENCE": ("assume_breach_agent",         assume_breach_agent),
     "DOOR_BREACH":    ("door_breach_agent",           door_breach_agent),
     "NOT_VIABLE":     ("emergency_resupply_agent",    emergency_resupply_agent),
+    "UNKNOWN":        ("ai_fallback_agent",           ai_fallback_agent),
 }
 
 

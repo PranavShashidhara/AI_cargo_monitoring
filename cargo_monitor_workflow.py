@@ -13,11 +13,34 @@ import json
 import uuid
 import sys
 import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send, interrupt
+
+# Load .env if present
+_env_path = Path(os.path.dirname(__file__)) / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            _k = _k.strip()
+            _v = _v.strip()
+            # Strip surrounding quotes (handles values with # or spaces)
+            if len(_v) >= 2 and _v[0] in ('"', "'") and _v[-1] == _v[0]:
+                _v = _v[1:-1]
+            else:
+                # Strip inline comments only when preceded by a space
+                _ci = _v.find(" #")
+                if _ci != -1:
+                    _v = _v[:_ci].strip()
+            os.environ.setdefault(_k, _v)
 
 sys.path.insert(0, os.path.dirname(__file__))
 from data.lookup_tables import (
@@ -36,6 +59,20 @@ from data.lookup_tables import (
     find_nearest_who_facility,
     haversine_km,
 )
+
+# ── Load operational data ──
+_DATA_DIR = Path(os.path.dirname(__file__)) / "data"
+
+def _load_json(name):
+    p = _DATA_DIR / name
+    if p.exists():
+        with open(p) as f:
+            return json.load(f)
+    return []
+
+_PATIENTS  = _load_json("patients.json")
+_FLIGHTS   = _load_json("flights.json")
+_INVENTORY = _load_json("inventory.json")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -910,40 +947,169 @@ def execute_reroute(state: CargoState) -> dict:
     }
 
 
-def notify_stakeholders(state: CargoState) -> dict:
-    sid = state.get("shipment_id", "N/A")
-    eta = state.get("updated_eta", "TBD")
-    narrative = state.get("risk_narrative", "")
-    hospital = state.get("destination_hospital", "")
-    anomaly = state.get("anomaly_type", "NOMINAL")
+def _generate_and_send_email(state: CargoState, extra_context: str = "") -> bool:
+    """Generate an AI-written alert email with Claude and send it via SMTP.
 
-    notifications = []
+    Reads credentials from env vars:
+      EMAIL_FROM      — sender Gmail / SMTP address
+      EMAIL_PASSWORD  — Gmail App Password (or SMTP password)
+      EMAIL_SMTP_SERVER (default smtp.gmail.com)
+      EMAIL_SMTP_PORT   (default 587)
 
-    notifications.append(
-        f"TO: {hospital} Ops Team | "
-        f"Shipment {sid} status update: {anomaly.replace('_', ' ')}. "
-        f"Revised ETA: {eta}. Action: {state.get('recommended_action', 'N/A')}"
+    Always sends to jbha0504@umd.edu.
+    Returns True if the email was sent successfully.
+    """
+    RECIPIENT = "jbha0504@umd.edu"
+
+    smtp_from   = os.environ.get("EMAIL_FROM", "")
+    smtp_pass   = os.environ.get("EMAIL_PASSWORD", "")
+    smtp_server = os.environ.get("EMAIL_SMTP_SERVER", "smtp.gmail.com")
+    smtp_port   = int(os.environ.get("EMAIL_SMTP_PORT", "587"))
+
+    sid      = state.get("shipment_id", "?")
+    hospital = state.get("destination_hospital", "Unknown Hospital")
+    anomaly  = state.get("anomaly_type", "UNKNOWN").replace("_", " ")
+    severity = state.get("severity", "HIGH")
+    action   = state.get("recommended_action", "Manual review")
+    delay    = state.get("time_impact_hrs", 0.0) or 0.0
+    narrative= state.get("risk_narrative", "")[:400]
+    vtype    = state.get("vaccine_type", "vaccine")
+    temp     = state.get("normalized_temp_c", state.get("temp_c", "?"))
+    elapsed  = state.get("elapsed_hrs", 0)
+
+    # ── AI-generated subject + body ──────────────────────────────────
+    ai_prompt = f"""You are writing an urgent operational alert email for a pharmaceutical cold-chain logistics incident.
+
+Incident details:
+- Shipment ID     : {sid}
+- Vaccine Type    : {vtype}
+- Destination     : {hospital}
+- Anomaly         : {anomaly} (Severity: {severity})
+- Action Taken    : {action}
+- Estimated Delay : ~{delay:.1f} hours
+- Current Temp    : {temp}°C
+- Hours into trip : {elapsed:.1f} h
+- Summary         : {narrative}
+{extra_context}
+
+Write a professional, urgent alert email. Be specific and factual.
+
+Respond ONLY as valid JSON (no markdown):
+{{
+  "subject": "<concise subject under 80 chars, starts with [URGENT] if severity is CRITICAL or HIGH>",
+  "body_html": "<full HTML email body, 3-4 paragraphs: incident summary, patient/inventory impact, actions taken, next steps required>"
+}}"""
+
+    subject   = f"[ALERT] Cold-Chain Incident: {sid} – {anomaly} at {hospital}"
+    body_html = (
+        f"<h2>Cold-Chain Alert — {anomaly}</h2>"
+        f"<p><b>Shipment:</b> {sid} | <b>Hospital:</b> {hospital} | "
+        f"<b>Severity:</b> {severity}</p>"
+        f"<p><b>Action Taken:</b> {action}</p>"
+        f"<p><b>Estimated Delay:</b> ~{delay:.1f} hours</p>"
+        f"<p>{narrative}</p>"
+        f"{extra_context}"
     )
+
+    try:
+        import anthropic as _ant
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise EnvironmentError("ANTHROPIC_API_KEY not set")
+        client = _ant.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": ai_prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1].lstrip("json").strip()
+            if "```" in raw:
+                raw = raw[: raw.index("```")]
+        parsed   = json.loads(raw)
+        subject  = parsed.get("subject", subject)
+        body_html= parsed.get("body_html", body_html)
+        print(f"  [email] AI generated subject: {subject}")
+    except Exception as ai_err:
+        print(f"  [email] AI generation skipped ({ai_err}), using fallback content")
+
+    # ── Send via SMTP ────────────────────────────────────────────────
+    if not smtp_from or not smtp_pass:
+        print(f"  [email] SMTP not configured (set EMAIL_FROM + EMAIL_PASSWORD). "
+              f"Would send to {RECIPIENT}: {subject}")
+        return False
+
+    try:
+        mime = MIMEMultipart("alternative")
+        mime["Subject"] = subject
+        mime["From"]    = smtp_from
+        mime["To"]      = RECIPIENT
+        mime.attach(MIMEText(body_html, "html"))
+
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=15) as srv:
+            srv.ehlo()
+            srv.starttls()
+            srv.login(smtp_from, smtp_pass)
+            srv.sendmail(smtp_from, RECIPIENT, mime.as_string())
+
+        print(f"  [email] Sent to {RECIPIENT}: {subject}")
+        return True
+    except Exception as smtp_err:
+        print(f"  [email] SMTP send failed: {smtp_err}")
+        return False
+
+
+def notify_stakeholders(state: CargoState) -> dict:
+    sid      = state.get("shipment_id", "N/A")
+    eta      = state.get("updated_eta", "TBD")
+    hospital = state.get("destination_hospital", "")
+    anomaly  = state.get("anomaly_type", "NOMINAL")
+
+    notifications = [
+        f"TO: {hospital} Ops Team | Shipment {sid}: {anomaly.replace('_',' ')}. "
+        f"Revised ETA: {eta}. Action: {state.get('recommended_action', 'N/A')}"
+    ]
 
     if state.get("broker_notified"):
         notifications.append(
-            f"TO: Customs Broker | "
-            f"Shipment {sid} customs escalation. {state.get('escalation_contact', '')}"
+            f"TO: Customs Broker | Shipment {sid} customs escalation. "
+            f"{state.get('escalation_contact', '')}"
         )
-
     if state.get("new_flight_id"):
         notifications.append(
-            f"TO: Airline Ops | "
-            f"Shipment {sid} rebooked to flight {state.get('new_flight_id', '')} "
-            f"departing {state.get('new_departure_time', '')}"
+            f"TO: Airline Ops | Shipment {sid} rebooked to flight "
+            f"{state.get('new_flight_id','')} departing {state.get('new_departure_time','')}"
         )
 
     backup = BACKUP_HOSPITALS.get(hospital)
     if backup:
         notifications.append(
-            f"TO: {backup['backup']} (BACKUP) | "
-            f"Standby for potential reroute of shipment {sid}"
+            f"TO: {backup['backup']} (BACKUP) | Standby for potential reroute of {sid}"
         )
+
+    # ── Look up next available flight for context in email ───────────
+    next_flight_info = ""
+    if _FLIGHTS:
+        dest = state.get("dest_airport", "JFK")
+        origin = state.get("transit_hub", "DXB")
+        route_flights = [
+            f for f in _FLIGHTS
+            if f["origin"] == origin and f["destination"] == dest
+            and f["status"] == "SCHEDULED"
+            and f["available_capacity_kg"] > 200
+        ]
+        if route_flights:
+            nf = sorted(route_flights, key=lambda x: x["departure_utc"])[0]
+            next_flight_info = (
+                f"\n<p><b>Next available cargo flight:</b> {nf['flight_id']} "
+                f"({nf['airline']}) — {nf['origin']}→{nf['destination']} "
+                f"departing {nf['departure_utc'][:16].replace('T',' ')} UTC, "
+                f"{nf['available_capacity_kg']} kg available</p>"
+            )
+
+    # ── Send real email ───────────────────────────────────────────────
+    _generate_and_send_email(state, extra_context=next_flight_info)
 
     return {
         "notifications_sent": json.dumps(notifications),
@@ -952,91 +1118,152 @@ def notify_stakeholders(state: CargoState) -> dict:
 
 
 def reschedule_patients(state: CargoState) -> dict:
-    hospital = state.get("destination_hospital", "Hospital")
-    sid = state.get("shipment_id", "N/A")
+    """Find real affected patients from patients.json and reschedule them."""
+    hospital  = state.get("destination_hospital", "Hospital")
+    sid       = state.get("shipment_id", "N/A")
+    vtype     = state.get("vaccine_type", "standard_flu")
+    pack_time = state.get("pack_time", "")
 
-    # time_impact_hrs = delay caused by the action agent (detour, vehicle swap, etc.)
-    # delay_hrs = flight-specific delay from monitor_flight_status
-    # Use whichever is greater; ignore accumulated total (not yet updated at this point)
     action_delay = state.get("time_impact_hrs", 0.0) or 0.0
     flight_delay = state.get("delay_hrs", 0.0) or 0.0
     delay = max(action_delay, flight_delay)
 
-    # Format ETA for human readability
-    raw_eta = state.get("updated_eta", "")
-    if raw_eta:
-        try:
-            from datetime import timezone as _tz
-            eta_dt = datetime.fromisoformat(raw_eta).astimezone(timezone.utc)
-            eta_display = eta_dt.strftime("%d %b %Y, %H:%M UTC")
-        except Exception:
-            eta_display = raw_eta
-    else:
+    if delay <= 0:
+        return {"rescheduled_count": 0}
+
+    # Work out original and delayed delivery windows
+    TOTAL_ROUTE_HRS = 38.5
+    try:
+        pack_dt = datetime.fromisoformat(
+            pack_time.replace("Z", "+00:00") if pack_time else ""
+        )
+    except (ValueError, TypeError):
+        pack_dt = datetime.now(timezone.utc)
+
+    original_delivery = pack_dt + timedelta(hours=TOTAL_ROUTE_HRS)
+    delayed_delivery  = original_delivery + timedelta(hours=delay)
+
+    # Patients at this hospital are at risk if their appointment falls
+    # in [original_delivery, delayed_delivery + 4h buffer]
+    window_end = delayed_delivery + timedelta(hours=4)
+
+    affected = [
+        p for p in _PATIENTS
+        if p["hospital"] == hospital
+        and p["vaccine_type"] == vtype
+        and _in_window(p["appointment_utc"], original_delivery, window_end)
+    ]
+
+    # Format ETA
+    try:
+        eta_display = delayed_delivery.strftime("%d %b %Y, %H:%M UTC")
+    except Exception:
         eta_display = "to be confirmed"
 
-    count = max(0, int(delay * 3))
-    if count == 0:
-        return {"rescheduled_count": 0, "notifications_sent": json.dumps([])}
+    if not affected:
+        # Fallback: return a count if no patients match the exact window
+        count = max(1, int(delay * 2))
+        return {
+            "rescheduled_count": count,
+            "notifications_sent": json.dumps([
+                f"TO: {hospital} Scheduling Desk | Shipment {sid} delayed ~{delay:.1f} hrs. "
+                f"~{count} appointment(s) in the delivery window may need rescheduling. "
+                f"New ETA: {eta_display}."
+            ]),
+        }
+
+    names = ", ".join(p["patient_name"] for p in affected[:5])
+    if len(affected) > 5:
+        names += f" (+{len(affected)-5} more)"
 
     return {
-        "rescheduled_count": count,
+        "rescheduled_count": len(affected),
         "notifications_sent": json.dumps([
             f"TO: {hospital} Scheduling Desk | "
-            f"Vaccine shipment {sid} has been delayed by ~{delay:.1f} hrs due to a cold-chain intervention. "
-            f"Approximately {count} patient appointment(s) may need to be rescheduled. "
-            f"Revised delivery ETA: {eta_display}."
+            f"Vaccine shipment {sid} delayed ~{delay:.1f} hrs. "
+            f"{len(affected)} patient appointment(s) affected: {names}. "
+            f"Revised vaccine delivery ETA: {eta_display}. "
+            f"Physicians: {', '.join(sorted({p['physician'] for p in affected}))}."
         ]),
     }
 
 
+def _in_window(appt_str: str, start: datetime, end: datetime) -> bool:
+    """Return True if appt_str (ISO) falls within [start, end]."""
+    try:
+        dt = datetime.fromisoformat(appt_str.replace("Z", "+00:00"))
+        return start <= dt <= end
+    except Exception:
+        return False
+
+
 def generate_insurance_doc(state: CargoState) -> dict:
-    sid = state.get("shipment_id", "N/A")
-    anomaly = state.get("anomaly_type", "UNKNOWN")
+    sid      = state.get("shipment_id", "N/A")
+    anomaly  = state.get("anomaly_type", "UNKNOWN")
     spoilage = state.get("spoilage_prob", 0.0)
-    delay = state.get("total_accumulated_delay_hrs", 0.0)
-    orig_days = state.get("insurance_days", 4)
-    vtype = state.get("vaccine_type", "standard_flu")
+    delay    = state.get("total_accumulated_delay_hrs", 0.0)
+    orig_days= state.get("insurance_days", 4)
+    vtype    = state.get("vaccine_type", "standard_flu")
 
     extra_days = max(1, int(delay / 24) + 1)
-    new_end = datetime.now(timezone.utc) + timedelta(days=orig_days + extra_days)
-
-    exposure = round(spoilage * 50000, 2)
-
-    claim = {
-        "claim_type": "Cold Chain Excursion",
-        "shipment_id": sid,
-        "vaccine_type": vtype,
-        "anomaly_type": anomaly,
-        "spoilage_probability": f"{spoilage:.1%}",
-        "estimated_financial_exposure_usd": exposure,
-        "original_coverage_days": orig_days,
-        "extended_coverage_days": orig_days + extra_days,
-        "delay_hours": delay,
-        "filed_at": datetime.now(timezone.utc).isoformat(),
-    }
+    new_end    = datetime.now(timezone.utc) + timedelta(days=orig_days + extra_days)
+    exposure   = round(spoilage * 50000, 2)
 
     return {
-        "insurance_doc_url": f"outputs/insurance_claim_{sid}.json",
+        "insurance_doc_url":     f"outputs/insurance_claim_{sid}.json",
         "new_coverage_end_date": new_end.strftime("%Y-%m-%d"),
     }
 
 
 def update_inventory_forecast(state: CargoState) -> dict:
+    """Read real inventory record and compute shortfall risk."""
     hospital = state.get("destination_hospital", "Hospital")
-    vtype = state.get("vaccine_type", "standard_flu")
-    delay = state.get("total_accumulated_delay_hrs", 0.0)
-    viable = state.get("shipment_viable", True)
+    vtype    = state.get("vaccine_type", "standard_flu")
+    delay    = max(
+        state.get("total_accumulated_delay_hrs", 0.0) or 0.0,
+        state.get("time_impact_hrs", 0.0) or 0.0,
+    )
+    viable   = state.get("shipment_viable", True)
 
-    shortfall = not viable or delay > 24.0
+    # Find matching inventory record
+    record = next(
+        (r for r in _INVENTORY
+         if r["hospital"] == hospital and r["vaccine_type"] == vtype),
+        None,
+    )
+
+    if record:
+        current     = record["current_units"]
+        daily_rate  = record["daily_usage_rate"]
+        days_supply = record["days_of_supply"]
+        minimum     = record["minimum_threshold"]
+        delay_days  = delay / 24.0
+        projected   = max(0, current - daily_rate * delay_days)
+        shortfall   = not viable or projected < minimum or delay > 24.0
+
+        inv_note = (
+            f"Current stock: {current} units ({days_supply:.1f} days supply, "
+            f"usage {daily_rate}/day). "
+            + (
+                f"Delay of {delay:.1f}h projects stock to ~{projected:.0f} units — "
+                f"BELOW minimum threshold of {minimum}. Backup allocation triggered."
+                if shortfall else
+                f"Delay of {delay:.1f}h projects stock to ~{projected:.0f} units — "
+                f"above minimum ({minimum}). No shortfall expected."
+            )
+        )
+    else:
+        shortfall = not viable or delay > 24.0
+        inv_note  = (
+            f"No inventory record found for {hospital}/{vtype}. "
+            f"{'SHORTFALL RISK — backup allocation triggered.' if shortfall else 'Within buffer.'}"
+        )
 
     return {
         "inventory_forecast_updated": True,
         "risk_narrative": (
             state.get("risk_narrative", "") +
-            f" | INVENTORY: {hospital} forecast updated for {vtype}. "
-            + (f"Delay {delay:.1f}hrs -- SHORTFALL RISK, backup allocation triggered."
-               if shortfall else
-               f"Delay {delay:.1f}hrs -- within buffer, no shortfall expected.")
+            f" | INVENTORY ({hospital}, {vtype}): {inv_note}"
         ),
     }
 
