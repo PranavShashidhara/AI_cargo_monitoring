@@ -212,6 +212,14 @@ class CargoState(TypedDict, total=False):
     buffer_warning_issued: bool  # True if low-buffer warning has already been sent this journey
     buffer_warning_message: str  # The warning message text
 
+    # ── Cold Storage Recovery Tracking ──
+    at_cold_storage: bool             # True while shipment is stabilizing at cold facility
+    resuming_from_cold_storage: bool  # True for the first reading after leaving cold storage
+    in_flight_temp_alert: bool        # True when TEMP_BREACH happens mid-flight (can't divert)
+    next_checkpoint_name: str         # Name of next waypoint after cold storage (airport/hub)
+    next_checkpoint_lat: float        # Lat of that waypoint
+    next_checkpoint_lng: float        # Lng of that waypoint
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # ② INGEST AGENT
@@ -244,7 +252,7 @@ def ingest_telemetry(state: CargoState) -> dict:
     if sensor_silent:
         alert = "CRITICAL"
 
-    return {
+    result = {
         "reading_id": state.get("reading_id", str(uuid.uuid4())[:8]),
         "ingested_at": now,
         "unit_valid": unit_valid,
@@ -253,6 +261,13 @@ def ingest_telemetry(state: CargoState) -> dict:
         "gps_stall_detected": gps_stall,
         "sensor_silence": sensor_silent,
     }
+
+    # While shipment is at cold storage facility, pin GPS to the facility location
+    if state.get("at_cold_storage") and state.get("cold_storage_lat"):
+        result["lat"] = state["cold_storage_lat"]
+        result["lng"] = state["cold_storage_lng"]
+
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -830,6 +845,14 @@ def orchestrate_decision(state: CargoState) -> dict:
             suppress = True
             effective_anomaly = "NOMINAL"
 
+    # ── Cold Storage Recovery: temp normalised → resume journey ──
+    at_cold = state.get("at_cold_storage", False)
+    resuming = False
+    if at_cold and effective_anomaly == "NOMINAL":
+        # Temperature is back to safe range — leave cold storage and head to destination
+        at_cold = False
+        resuming = True
+
     cascade = effective_anomaly != "NOMINAL"
     dispatched = []
     if cascade:
@@ -846,6 +869,8 @@ def orchestrate_decision(state: CargoState) -> dict:
         "active_anomaly": effective_anomaly if cascade else active_anomaly,
         "anomaly_cooldown_readings": new_cooldown,
         "anomaly_handled": anomaly_handled if not cascade else False,
+        "at_cold_storage": at_cold,
+        "resuming_from_cold_storage": resuming,
     }
 
 
@@ -853,18 +878,25 @@ def route_orchestrator(state: CargoState) -> str:
     if not state.get("shipment_viable", True):
         return "NOT_VIABLE"
     anomaly = state.get("anomaly_type", "NOMINAL")
+    leg_mode = state.get("leg_mode", "truck")
+
+    if anomaly == "TEMP_BREACH":
+        # Mid-flight: can't divert to cold storage — use in-flight alert handler
+        if leg_mode == "flight":
+            return "TEMP_BREACH_FLIGHT"
+        # On ground / truck / airport: divert to nearest cold storage
+        return "TEMP_BREACH"
+
     valid = {
-        "TEMP_BREACH", "REEFER_FAILURE", "TRUCK_STALL",
+        "REEFER_FAILURE", "TRUCK_STALL",
         "FLIGHT_CANCEL", "CUSTOMS_HOLD", "SENSOR_SILENCE",
         "DOOR_BREACH",
     }
     if anomaly in valid:
         return anomaly
     if anomaly == "ROAD_ACCIDENT":
-        # Road accidents need AI contextual analysis — route to fallback agent
         return "UNKNOWN"
     if anomaly != "NOMINAL":
-        # Any unrecognised non-nominal anomaly goes to the AI fallback agent
         return "UNKNOWN"
     return "NOMINAL"
 
@@ -875,6 +907,47 @@ def route_orchestrator(state: CargoState) -> str:
 
 def continue_monitoring(state: CargoState) -> dict:
     return {"recommended_action": "Continue monitoring -- no anomaly detected"}
+
+
+# Leg → (next_checkpoint_name, airport_code_hint) after cold storage recovery
+_LEG_NEXT_CHECKPOINT = {
+    "warehouse_to_airport": "Origin Airport",
+    "origin_airport_wait":  "Origin Airport",
+    "transit_hub_wait":     "Transit Hub",
+    "dest_airport_customs": "Destination Airport",
+    "last_mile_delivery":   "Destination Hospital",
+    "road_transit":         "Next Stop",
+}
+
+
+def _next_checkpoint_coords(state: dict) -> tuple[str, float, float]:
+    """Return (name, lat, lng) of the next route checkpoint after cold storage."""
+    leg = state.get("leg", "")
+    hint = _LEG_NEXT_CHECKPOINT.get(leg, "Destination")
+
+    # Airport / hub coordinate look-up using known IATA codes stored in state
+    AIRPORT_COORDS = {
+        "BOM": (19.090, 72.866),
+        "DXB": (25.253, 55.366),
+        "JFK": (40.641, -73.778),
+        "DEL": (28.556, 77.100),
+        "BLR": (13.199, 77.706),
+        "AMD": (23.072, 72.634),
+    }
+    if hint == "Origin Airport":
+        iata = state.get("origin_airport", "BOM")
+        lt, ln = AIRPORT_COORDS.get(iata, (19.090, 72.866))
+        return f"{iata} Airport", lt, ln
+    if hint == "Transit Hub":
+        iata = state.get("transit_hub", "DXB")
+        lt, ln = AIRPORT_COORDS.get(iata, (25.253, 55.366))
+        return f"{iata} Hub", lt, ln
+    if hint == "Destination Airport":
+        iata = state.get("dest_airport", "JFK")
+        lt, ln = AIRPORT_COORDS.get(iata, (40.641, -73.778))
+        return f"{iata} Airport", lt, ln
+    # Destination Hospital / generic next stop — fall back to route endpoint
+    return hint, state.get("lat", 0.0), state.get("lng", 0.0)
 
 
 def cold_storage_intervention(state: CargoState) -> dict:
@@ -897,6 +970,8 @@ def cold_storage_intervention(state: CargoState) -> dict:
     elapsed = state.get("elapsed_hrs", 0.0)
     new_eta = pack_dt + timedelta(hours=elapsed + detour_hrs + action_window * 0.5)
 
+    cp_name, cp_lat, cp_lng = _next_checkpoint_coords(state)
+
     return {
         "cold_storage_location": f"{facility['name']} ({facility['id']}) - {dist_km}km away",
         "cold_storage_lat": facility["lat"],
@@ -905,6 +980,53 @@ def cold_storage_intervention(state: CargoState) -> dict:
         "updated_eta": new_eta.isoformat(),
         "hub_storage_needed": "hub" not in facility.get("type", ""),
         "time_impact_hrs": detour_hrs,
+        # Next route checkpoint after cold storage (used by dashboard to draw the onward path)
+        "next_checkpoint_name": cp_name,
+        "next_checkpoint_lat":  cp_lat,
+        "next_checkpoint_lng":  cp_lng,
+        "in_flight_temp_alert": False,
+    }
+
+
+def flight_temp_alert_agent(state: CargoState) -> dict:
+    """Handle TEMP_BREACH that occurs during a flight leg.
+
+    A flight cannot be diverted to a cold storage facility. Instead:
+    - Alert the airline crew to adjust reefer unit settings
+    - Identify the next landing airport and request cold storage preparation there
+    - The shipment continues on its flight — no physical reroute
+    """
+    leg = state.get("leg", "")
+    temp = state.get("normalized_temp_c", state.get("temp_c", 0.0))
+    vtype = state.get("vaccine_type", "standard_flu")
+    thresholds = get_vaccine_threshold(vtype)
+    t_min, t_max = thresholds["temp_min"], thresholds["temp_max"]
+
+    # Determine next landing airport from the leg
+    if "to_hub" in leg or "to_dest" in leg.replace("dest_flight", "to_dest"):
+        next_airport = state.get("transit_hub", "DXB") if "to_hub" in leg else state.get("dest_airport", "JFK")
+    else:
+        next_airport = state.get("dest_airport", "JFK")
+
+    AIRPORT_COORDS = {
+        "BOM": (19.090, 72.866), "DXB": (25.253, 55.366),
+        "JFK": (40.641, -73.778), "DEL": (28.556, 77.100),
+    }
+    ap_lat, ap_lng = AIRPORT_COORDS.get(next_airport, (25.253, 55.366))
+
+    return {
+        "in_flight_temp_alert": True,
+        "recommended_action": (
+            f"Notify airline crew: reefer excursion {temp:.1f}°C (safe: {t_min}–{t_max}°C). "
+            f"Request cold storage preparation at {next_airport} on landing."
+        ),
+        "cold_storage_location": f"Prepare at {next_airport} Airport on landing",
+        "cold_storage_lat": ap_lat,
+        "cold_storage_lng": ap_lng,
+        "next_checkpoint_name": f"{next_airport} Airport",
+        "next_checkpoint_lat": ap_lat,
+        "next_checkpoint_lng": ap_lng,
+        "time_impact_hrs": 1.5,   # ground handling delay to move into airport cold storage
     }
 
 
@@ -1384,6 +1506,9 @@ def execute_reroute(state: CargoState) -> dict:
     return {
         "reroute_confirmed": has_action,
         "new_route_polyline": "".join(segments) if segments else "NO_CHANGE",
+        # Mark shipment as physically at cold storage until temp normalises
+        "at_cold_storage": bool(cold),
+        "resuming_from_cold_storage": False,
     }
 
 
@@ -1793,6 +1918,9 @@ _RESET_FIELDS = {
     "cold_storage_lat": 0.0, "cold_storage_lng": 0.0, "time_impact_hrs": 0.0,
     "decision": "", "actions_dispatched": "",
     "ai_diagnosis": "", "ai_reasoning": "",
+    "in_flight_temp_alert": False,
+    "next_checkpoint_name": "", "next_checkpoint_lat": 0.0, "next_checkpoint_lng": 0.0,
+    "resuming_from_cold_storage": False,
 }
 
 
@@ -1830,6 +1958,14 @@ def wait_for_next_reading(state: CargoState) -> dict:
 
     result = {**_RESET_FIELDS, **dict(next_reading), "reading_index": idx}
     result["total_accumulated_delay_hrs"] = new_accum
+
+    # Persist cold storage tracking fields across readings — _RESET_FIELDS zeros them
+    if state.get("at_cold_storage"):
+        result["at_cold_storage"] = True
+        result["cold_storage_lat"] = state.get("cold_storage_lat", 0.0)
+        result["cold_storage_lng"] = state.get("cold_storage_lng", 0.0)
+        result["cold_storage_location"] = state.get("cold_storage_location", "")
+
     return result
 
 
@@ -1866,6 +2002,7 @@ def build_cargo_monitor_graph(mode: str = "loop") -> StateGraph:
     builder.add_node("orchestrate_decision", orchestrate_decision)
     builder.add_node("continue_monitoring", continue_monitoring)
     builder.add_node("cold_storage_intervention", cold_storage_intervention)
+    builder.add_node("flight_temp_alert_agent", flight_temp_alert_agent)
     builder.add_node("emergency_vehicle_swap", emergency_vehicle_swap)
     builder.add_node("alternate_carrier_agent", alternate_carrier_agent)
     builder.add_node("flight_rebooking_agent", flight_rebooking_agent)
@@ -1915,8 +2052,9 @@ def build_cargo_monitor_graph(mode: str = "loop") -> StateGraph:
         "orchestrate_decision", route_orchestrator,
         {
             "NOMINAL":        "continue_monitoring",
-            "TEMP_BREACH":    "cold_storage_intervention",
-            "REEFER_FAILURE": "emergency_vehicle_swap",
+            "TEMP_BREACH":        "cold_storage_intervention",
+            "TEMP_BREACH_FLIGHT": "flight_temp_alert_agent",
+            "REEFER_FAILURE":     "emergency_vehicle_swap",
             "TRUCK_STALL":    "alternate_carrier_agent",
             "FLIGHT_CANCEL":  "flight_rebooking_agent",
             "CUSTOMS_HOLD":   "compliance_escalation_agent",
@@ -1941,10 +2079,10 @@ def build_cargo_monitor_graph(mode: str = "loop") -> StateGraph:
 
     # ── Anomaly → action → human approval ──
     for node in [
-        "cold_storage_intervention", "emergency_vehicle_swap",
-        "alternate_carrier_agent", "flight_rebooking_agent",
-        "compliance_escalation_agent", "assume_breach_agent",
-        "door_breach_agent", "ai_fallback_agent",
+        "cold_storage_intervention", "flight_temp_alert_agent",
+        "emergency_vehicle_swap", "alternate_carrier_agent",
+        "flight_rebooking_agent", "compliance_escalation_agent",
+        "assume_breach_agent", "door_breach_agent", "ai_fallback_agent",
     ]:
         builder.add_edge(node, "human_approval_gateway")
 

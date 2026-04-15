@@ -15,6 +15,7 @@ graph TD;
 	monitor_customs(monitor_customs)
 	score_risk(score_risk)
 	check_viability_budget(check_viability_budget)
+	check_buffer_warning(check_buffer_warning)
 	orchestrate_decision(orchestrate_decision)
 	continue_monitoring(continue_monitoring)
 	cold_storage_intervention(cold_storage_intervention)
@@ -39,7 +40,8 @@ graph TD;
 	ai_fallback_agent --> human_approval_gateway;
 	alternate_carrier_agent --> human_approval_gateway;
 	assume_breach_agent --> human_approval_gateway;
-	check_viability_budget --> orchestrate_decision;
+	check_buffer_warning --> orchestrate_decision;
+	check_viability_budget --> check_buffer_warning;
 	cold_storage_intervention --> human_approval_gateway;
 	compliance_escalation_agent --> human_approval_gateway;
 	compliance_logger -. &nbsp;end&nbsp; .-> __end__;

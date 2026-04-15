@@ -193,7 +193,7 @@ select.speed{background:var(--bg-2);color:var(--t1);border:1px solid var(--borde
 // No setInterval is used. Readings chain via setTimeout inside handleState only.
 let shipments=[],telemetry=[],selected=null,idx=0,playing=false,speed=400,lastState={},feedCount=0,inFlight=false;
 let wallStart=null,wallTimer=null;
-let map,routeLayer,posMarker,anomalyMarkers=[],rerouteLine=null,rerouteDestLine=null,csMarker=null;
+let map,routeLayer,posMarker,anomalyMarkers=[],rerouteLine=null,rerouteDestLine=null,csMarker=null,csHistoryMarkers=[];
 
 // Per-profile route definitions: waypoints + segment modes
 const ROUTE_PROFILES_MAP = {
@@ -277,6 +277,7 @@ async function selectShipment(sid){
   telemetry=await fetch('/api/telemetry/'+sid).then(r=>r.json());
   idx=0;feedCount=0;lastState={};wallStart=null;threadId=null;journeyStarted=false;inFlight=false;
   anomalyMarkers.forEach(m=>map.removeLayer(m));anomalyMarkers=[];
+  csHistoryMarkers.forEach(m=>map.removeLayer(m));csHistoryMarkers=[];
   clearReroute();
   document.getElementById('controls').style.display='flex';
   document.getElementById('eta-panel').classList.remove('hidden');
@@ -355,34 +356,69 @@ function moveVehicle(lat,lng,mode,heading,danger){
   if(!posMarker)return;posMarker.setLatLng([lat,lng]);posMarker.setIcon(vehicleIcon(mode,heading,danger));
 }
 function pinAnomaly(lat,lng,label){anomalyMarkers.push(L.circleMarker([lat,lng],{radius:9,color:'#ef4444',fillColor:'#ef4444',fillOpacity:.2,weight:2}).bindPopup(label).addTo(map));}
+function _placeCSMarker(lat,lng,label,permanent){
+  // permanent markers stay after clearReroute (historical ❄️ pins)
+  const m=L.marker([lat,lng],{icon:L.divIcon({
+    className:'',html:'<div class="cs-icon">&#10052;&#65039;</div>',iconSize:[28,28],iconAnchor:[14,14]
+  })}).bindPopup(label).addTo(map);
+  if(permanent) csHistoryMarkers.push(m); else csMarker=m;
+}
+
+function _onwardTarget(st){
+  // Returns {lat,lng,name} of the next route checkpoint after cold storage.
+  // Prefer the explicit next_checkpoint from the backend; fall back to final dest.
+  if(st.next_checkpoint_lat && st.next_checkpoint_lng)
+    return {lat:st.next_checkpoint_lat, lng:st.next_checkpoint_lng, name:st.next_checkpoint_name||'Next Stop'};
+  const wps=getRouteProfile().waypoints;
+  return wps[wps.length-1];
+}
+
 function drawReroutePath(st){
   clearReroute();
   const curLat=st.lat||0, curLng=st.lng||0;
   const hasStop=st.cold_storage_lat&&st.cold_storage_lng;
   const stopLat=st.cold_storage_lat, stopLng=st.cold_storage_lng;
   const stopLabel=st.cold_storage_location||'Reroute Stop';
-  const wps=getRouteProfile().waypoints;
-  const dest=wps[wps.length-1];
+  const onward=_onwardTarget(st);   // next checkpoint, not final destination
 
-  if(hasStop){
-    // current → reroute stop (orange solid — confirmed new leg)
+  if(hasStop && !st.in_flight_temp_alert){
+    // current → cold storage (orange solid)
     rerouteLine=L.polyline([[curLat,curLng],[stopLat,stopLng]],
       {color:'#f97316',weight:3,opacity:.9}).addTo(map);
-    // reroute stop → final destination (orange dashed — onward path)
-    rerouteDestLine=L.polyline([[stopLat,stopLng],[dest.lat,dest.lng]],
+    // cold storage → next checkpoint (orange dashed — e.g. back to airport)
+    rerouteDestLine=L.polyline([[stopLat,stopLng],[onward.lat,onward.lng]],
       {color:'#f97316',weight:2,dashArray:'6 5',opacity:.65}).addTo(map);
-    // stop marker
-    csMarker=L.marker([stopLat,stopLng],{icon:L.divIcon({
-      className:'',html:'<div class="cs-icon">&#10052;&#65039;</div>',iconSize:[28,28],iconAnchor:[14,14]
-    })}).bindPopup(stopLabel).addTo(map);
-    // fit map to show full new path
-    map.fitBounds(L.latLngBounds([[curLat,curLng],[stopLat,stopLng],[dest.lat,dest.lng]]).pad(.2));
+    // ❄️ marker at cold storage (non-permanent while still active)
+    _placeCSMarker(stopLat,stopLng,stopLabel,false);
+    map.fitBounds(L.latLngBounds([[curLat,curLng],[stopLat,stopLng],[onward.lat,onward.lng]]).pad(.2));
+
+  } else if(st.in_flight_temp_alert && hasStop){
+    // In-flight: can't divert — show warning pin at next airport only
+    _placeCSMarker(stopLat,stopLng,
+      `&#9888; Cold storage requested at ${stopLabel} on landing`,false);
+    map.setView([curLat,curLng],5);
+
   } else {
-    // No specific stop (e.g. flight rebook, carrier swap) — draw direct orange line to destination
+    // No specific stop (flight rebook, carrier swap) — dashed orange to final destination
+    const wps=getRouteProfile().waypoints;
+    const dest=wps[wps.length-1];
     rerouteLine=L.polyline([[curLat,curLng],[dest.lat,dest.lng]],
       {color:'#f97316',weight:2.5,dashArray:'8 5',opacity:.8}).addTo(map);
     map.fitBounds(L.latLngBounds([[curLat,curLng],[dest.lat,dest.lng]]).pad(.2));
   }
+}
+
+function drawColdStorageResumePath(st){
+  // Temp normalised — draw green line from cold storage → next checkpoint (e.g. airport)
+  clearReroute();
+  const csLat=st.cold_storage_lat||st.lat||0, csLng=st.cold_storage_lng||st.lng||0;
+  const onward=_onwardTarget(st);
+  rerouteLine=L.polyline([[csLat,csLng],[onward.lat,onward.lng]],
+    {color:'#22c55e',weight:3,opacity:.9}).addTo(map);
+  // Leave ❄️ as permanent historical marker
+  _placeCSMarker(csLat,csLng,
+    (st.cold_storage_location||'Cold Storage')+' — Temp Stabilised ✓',true);
+  map.fitBounds(L.latLngBounds([[csLat,csLng],[onward.lat,onward.lng]]).pad(.2));
 }
 function clearReroute(){
   if(rerouteLine){map.removeLayer(rerouteLine);rerouteLine=null;}
@@ -648,6 +684,31 @@ function handleState(st){
     return;
   }
 
+  // ── Cold Storage: shipment stabilising at facility ──
+  if(st.at_cold_storage){
+    const intr2=st._interrupt;
+    if(intr2&&intr2.type==='next_reading') idx=intr2.reading_index;
+    addFeed('warning','&#10052; Stabilising at Cold Storage',
+      `<b>${selected.shipment_id}</b> is at <b>${st.cold_storage_location||'cold storage facility'}</b>. `+
+      `Current temp: <b>${temp.toFixed(1)}°C</b>. Monitoring until temperature returns to ${mn}–${mx}°C.`);
+    // Keep reroute lines on map while stabilising
+    if(playing) setTimeout(sendNextReading, speed);
+    return;
+  }
+
+  // ── Cold Storage Resume: temp normalised, heading back to route ──
+  if(st.resuming_from_cold_storage){
+    const intr3=st._interrupt;
+    if(intr3&&intr3.type==='next_reading') idx=intr3.reading_index;
+    drawColdStorageResumePath(st);
+    const nextStop=st.next_checkpoint_name||selected.destination_hospital||'destination';
+    addFeed('success','&#9989; Temperature Stabilised — Resuming Journey',
+      `Temp is back to <b>${temp.toFixed(1)}°C</b> (safe range: ${mn}–${mx}°C). `+
+      `Shipment leaving <b>${st.cold_storage_location||'cold storage'}</b> → heading to <b>${nextStop}</b>.`);
+    if(playing) setTimeout(sendNextReading, speed);
+    return;
+  }
+
   // ── NOMINAL: chain next reading via setTimeout only when playing ──
   const intr=st._interrupt;
   if(intr&&intr.type==='next_reading'){
@@ -660,6 +721,11 @@ function handleState(st){
     return;
   }
 
+  // ── After resuming: clear the green resume line once we're moving normally ──
+  if(!st.at_cold_storage && !st.resuming_from_cold_storage && rerouteLine){
+    clearReroute();
+  }
+
   // ── Anomaly: stop auto-play, show alert in feed with a "What to do next" button ──
   // Action cards are NOT shown yet — user must click the button first to review them.
   if(st.anomaly_type&&st.anomaly_type!=='NOMINAL'){
@@ -669,9 +735,32 @@ function handleState(st){
     const isTempRelated=TEMP_ANOMALIES.has(st.anomaly_type);
     const spoilagePart=isTempRelated
       ?`<br><b>Spoilage Risk:</b> ${((st.spoilage_prob||0)*100).toFixed(0)}% &nbsp;|&nbsp; <b>Buffer:</b> ${fmtHrs(st.buffer_hrs||0)}`:'';
+
+    // In-flight temp breach: different messaging — can't divert, just prepare landing cold storage
+    if(st.in_flight_temp_alert){
+      const nextAirport=st.next_checkpoint_name||'next airport';
+      drawReroutePath(st);  // places ❄️ pin at next airport
+      addFeed('danger','&#9992; In-Flight Temperature Breach',
+        `Temperature <b>${temp.toFixed(1)}°C</b> detected mid-flight (safe: ${mn}–${mx}°C).`+
+        `<br><b>Flight cannot be diverted.</b> Airline crew has been notified to adjust reefer settings.`+
+        `<br>&#10052; Cold storage is being arranged at <b>${nextAirport}</b> for landing.`+
+        spoilagePart,
+        [{l:'&#9654; What to do next', c:'primary', fn:'showActionCards()'}]);
+      return;
+    }
+
     const nextActionLine=`<br><span style="color:var(--t2);font-size:11px;margin-top:4px;display:block">&#8594; <b>Next step:</b> ${st.recommended_action||'Review recommended actions'}</span>`;
-    // Show proposed reroute on map so operator can visualise the proposal
-    drawReroutePath(st);
+
+    // Only draw a reroute overlay for anomalies that physically divert the shipment.
+    // TEMP_BREACH on a truck leg = real detour to cold storage facility.
+    // All other anomalies (DOOR_BREACH, SENSOR_SILENCE, CUSTOMS_HOLD, TRUCK_STALL,
+    // ROAD_ACCIDENT, REEFER_FAILURE, FLIGHT_CANCEL) keep the original route —
+    // intervention happens at the current location, then shipment continues as planned.
+    const causesDivert = st.anomaly_type==='TEMP_BREACH'
+                      && st.leg_mode!=='flight'
+                      && st.cold_storage_lat && st.cold_storage_lng;
+    if(causesDivert) drawReroutePath(st);
+
     addFeed('danger', anomalyTitle(st.anomaly_type),
       anomalyBody(st)+spoilagePart+nextActionLine,
       [{l:'&#9654; What to do next', c:'primary', fn:'showActionCards()'}]);
@@ -760,8 +849,13 @@ async function approveAction(){
 
   lastState=res;updateETA(res);
 
-  // Update map: draw full confirmed reroute path after approval
-  drawReroutePath(res);
+  // Update map: only draw a reroute overlay if shipment actually diverts to a new location.
+  // TEMP_BREACH on truck → real cold storage detour (has cold_storage_lat/lng).
+  // Everything else (door breach, stall, customs, sensor, reefer, flight cancel)
+  // stays on the original route — no map line needed.
+  const confirmedDivert = res.cold_storage_lat && res.cold_storage_lng
+                       && res.anomaly_type==='TEMP_BREACH' && res.leg_mode!=='flight';
+  if(confirmedDivert) drawReroutePath(res);
 
   const intr=res._interrupt;
   if(intr&&intr.type==='next_reading')idx=intr.reading_index;

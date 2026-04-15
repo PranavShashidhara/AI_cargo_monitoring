@@ -41,7 +41,7 @@ ROUTE_PROFILES = {
         "legs": [
             {
                 "leg": "warehouse_to_airport",
-                "description": "Truck: Mumbai warehouse → BOM airport",
+                "description": "Truck: Mumbai warehouse -> BOM airport",
                 "start_coords": (19.0760, 72.8777),
                 "end_coords":   (19.0896, 72.8656),
                 "duration_hrs": 3.0,
@@ -57,7 +57,7 @@ ROUTE_PROFILES = {
             },
             {
                 "leg": "flight_to_hub",
-                "description": "Flight: BOM → DXB",
+                "description": "Flight: BOM -> DXB",
                 "start_coords": (19.0896, 72.8656),
                 "end_coords":   (25.2532, 55.3657),
                 "duration_hrs": 3.5,
@@ -73,7 +73,7 @@ ROUTE_PROFILES = {
             },
             {
                 "leg": "flight_to_dest",
-                "description": "Flight: DXB → JFK",
+                "description": "Flight: DXB -> JFK",
                 "start_coords": (25.2532, 55.3657),
                 "end_coords":   (40.6413, -73.7781),
                 "duration_hrs": 14.0,
@@ -89,7 +89,7 @@ ROUTE_PROFILES = {
             },
             {
                 "leg": "last_mile_delivery",
-                "description": "Truck: JFK → NYC Hospital",
+                "description": "Truck: JFK -> NYC Hospital",
                 "start_coords": (40.6413, -73.7781),
                 "end_coords":   (40.7128, -74.0060),
                 "duration_hrs": 2.0,
@@ -98,7 +98,7 @@ ROUTE_PROFILES = {
         ],
     },
 
-    # ── Domestic short: Mumbai → Ahmedabad (truck only, ~5 hrs) ─────────
+    # ── Domestic short: Mumbai -> Ahmedabad (truck only, ~5 hrs) ─────────
     "domestic_mum_ahm": {
         "label": "Mumbai -> Ahmedabad",
         "origin_airport": None,
@@ -110,7 +110,7 @@ ROUTE_PROFILES = {
         "legs": [
             {
                 "leg": "warehouse_to_truck",
-                "description": "Truck: Mumbai cold storage → city pickup",
+                "description": "Truck: Mumbai cold storage -> city pickup",
                 "start_coords": (19.0760, 72.8777),
                 "end_coords":   (19.1200, 72.8500),
                 "duration_hrs": 0.5,
@@ -118,7 +118,7 @@ ROUTE_PROFILES = {
             },
             {
                 "leg": "road_transit",
-                "description": "Truck: Mumbai → Ahmedabad (NH48)",
+                "description": "Truck: Mumbai -> Ahmedabad (NH48)",
                 "start_coords": (19.1200, 72.8500),
                 "end_coords":   (23.0225, 72.5714),
                 "duration_hrs": 4.0,
@@ -126,7 +126,7 @@ ROUTE_PROFILES = {
             },
             {
                 "leg": "last_mile_delivery",
-                "description": "Truck: Ahmedabad city → hospital",
+                "description": "Truck: Ahmedabad city -> hospital",
                 "start_coords": (23.0225, 72.5714),
                 "end_coords":   (23.0300, 72.5600),
                 "duration_hrs": 0.5,
@@ -135,7 +135,7 @@ ROUTE_PROFILES = {
         ],
     },
 
-    # ── Regional: Mumbai → Delhi (truck + domestic flight, ~6 hrs) ──────
+    # ── Regional: Mumbai -> Delhi (truck + domestic flight, ~6 hrs) ──────
     "regional_mum_del": {
         "label": "Mumbai -> Delhi",
         "origin_airport": "BOM",
@@ -147,7 +147,7 @@ ROUTE_PROFILES = {
         "legs": [
             {
                 "leg": "warehouse_to_airport",
-                "description": "Truck: Mumbai cold storage → BOM airport",
+                "description": "Truck: Mumbai cold storage -> BOM airport",
                 "start_coords": (19.0760, 72.8777),
                 "end_coords":   (19.0896, 72.8656),
                 "duration_hrs": 1.0,
@@ -163,7 +163,7 @@ ROUTE_PROFILES = {
             },
             {
                 "leg": "flight_to_dest",
-                "description": "Flight: BOM → DEL",
+                "description": "Flight: BOM -> DEL",
                 "start_coords": (19.0896, 72.8656),
                 "end_coords":   (28.5562, 77.1000),
                 "duration_hrs": 2.0,
@@ -179,7 +179,7 @@ ROUTE_PROFILES = {
             },
             {
                 "leg": "last_mile_delivery",
-                "description": "Truck: DEL airport → hospital",
+                "description": "Truck: DEL airport -> hospital",
                 "start_coords": (28.5562, 77.1000),
                 "end_coords":   (28.6139, 77.2090),
                 "duration_hrs": 0.75,
@@ -221,55 +221,121 @@ SHIPMENT_ROUTES = {
 # ═══════════════════════════════════════════════════════════════════════
 
 ANOMALY_SCENARIOS = {
-    "SHP-003": {
-        "type": "TEMP_BREACH",
-        "description": "Temperature spike at hour 14 during DXB->JFK flight",
-        "inject_at_hr": 14.0,
-        "duration_hrs": 2.0,
-        "temp_offset": +6.0,
-    },
-    "SHP-005": {
+    # ── SHP-003: ALL failure types in one journey (demo shipment) ──────────
+    # Covers every workflow node so operators can see the full system in action.
+    # international BOM->DXB->JFK (35.5 hrs, 30-min readings)
+    #
+    # Leg timing reference:
+    #   0.0– 3.0 h  warehouse_to_airport  (truck)
+    #   3.0– 7.0 h  origin_airport_wait   (airport)
+    #   7.0–10.5 h  flight_to_hub         (flight)
+    #  10.5–14.5 h  transit_hub_wait      (airport)
+    #  14.5–28.5 h  flight_to_dest        (flight)
+    #  28.5–31.5 h  dest_airport_customs  (airport)
+    #  31.5–35.5 h  last_mile_delivery    (truck)
+    "SHP-003": [
+        {
+            "type": "TEMP_BREACH",
+            "description": "Reefer temp drifts high on the warehouse truck leg",
+            "inject_at_hr": 2.0,
+            "duration_hrs": 1.0,       # readings 4–5 (truck) -> cold_storage_intervention
+            "temp_offset": +4.5,       # 5+4.5=9.5°C, deviation=1.5 -> TEMP_BREACH (not REEFER)
+        },
+        {
+            "type": "DOOR_BREACH",
+            "description": "Container lid inadvertently opened at BOM cargo terminal",
+            "inject_at_hr": 5.5,
+            "duration_hrs": 0.5,       # reading 11 (airport) -> door_breach_agent
+            "door_override": True,
+        },
+        {
+            "type": "FLIGHT_CANCEL",
+            "description": "BOM->DXB flight cancelled due to sandstorm",
+            "inject_at_hr": 6.5,
+            "duration_hrs": 1.5,       # readings 13–14 (airport) debounce=2 -> flight_rebooking_agent
+            "flight_override": "CANCELLED",
+        },
+        {
+            "type": "SENSOR_SILENCE",
+            "description": "IoT tracker battery critically low at DXB hub",
+            "inject_at_hr": 12.0,
+            "duration_hrs": 0.5,       # reading 24 (airport) -> assume_breach_agent
+            "battery_override": 5.0,   # <20% triggers SENSOR_SILENCE
+        },
+        {
+            "type": "REEFER_FAILURE",
+            "description": "Refrigeration unit catastrophic failure at DXB hub",
+            "inject_at_hr": 13.5,
+            "duration_hrs": 1.0,       # readings 27–28 (airport) -> emergency_vehicle_swap
+            "temp_offset": +8.5,       # 5+8.5=13.5°C, deviation=5.5 > 3.0 -> REEFER_FAILURE
+        },
+        {
+            "type": "CUSTOMS_HOLD",
+            "description": "FDA documentation rejected at JFK — import permit missing",
+            "inject_at_hr": 29.0,
+            "duration_hrs": 1.5,       # readings 58–61 (airport) debounce=2 -> compliance_escalation_agent
+            "customs_override": "HOLD_FDA_DOCS",
+        },
+        {
+            "type": "TRUCK_STALL",
+            "description": "Last-mile delivery truck breaks down in Brooklyn",
+            "inject_at_hr": 33.0,
+            "duration_hrs": 1.5,       # readings 67–68 (truck) debounce=2 -> alternate_carrier_agent
+            "speed_override": 0.0,
+        },
+        {
+            "type": "ROAD_ACCIDENT",
+            "description": "Rear-end collision on the FDR Drive approach to hospital",
+            "inject_at_hr": 34.5,
+            "duration_hrs": 0.5,       # reading 69 (truck) -> ai_fallback_agent
+            "shock_g_override": 4.5,
+            "speed_override": 0.0,
+        },
+    ],
+
+    # ── Other shipments — single anomaly each ─────────────────────────────
+    "SHP-005": [{
         "type": "TRUCK_STALL",
         "description": "Truck breakdown on way to BOM airport",
         "inject_at_hr": 1.5,
         "duration_hrs": 1.0,
         "speed_override": 0.0,
-    },
-    "SHP-006": {
+    }],
+    "SHP-006": [{
         "type": "TRUCK_STALL",
         "description": "Truck stall on Mumbai-Ahmedabad highway",
         "inject_at_hr": 2.0,
         "duration_hrs": 0.5,
         "speed_override": 0.0,
-    },
-    "SHP-007": {
+    }],
+    "SHP-007": [{
         "type": "CUSTOMS_HOLD",
         "description": "FDA documentation rejected at JFK",
         "inject_at_hr": 28.0,
         "duration_hrs": 6.0,
         "customs_override": "HOLD_FDA_DOCS",
-    },
-    "SHP-008": {
+    }],
+    "SHP-008": [{
         "type": "FLIGHT_CANCEL",
         "description": "BOM->DXB flight cancelled due to weather",
         "inject_at_hr": 6.0,
         "duration_hrs": 8.0,
         "flight_override": "CANCELLED",
-    },
-    "SHP-009": {
+    }],
+    "SHP-009": [{
         "type": "SENSOR_SILENCE",
         "description": "Tracker battery dies mid-flight BOM->DEL",
         "inject_at_hr": 3.0,
         "duration_hrs": 1.0,
         "battery_override": 0.0,
-    },
-    "SHP-010": {
+    }],
+    "SHP-010": [{
         "type": "DOOR_BREACH",
         "description": "Container opened during DXB layover",
         "inject_at_hr": 11.5,
         "duration_hrs": 0.15,
         "door_override": True,
-    },
+    }],
 }
 
 
@@ -352,7 +418,10 @@ def generate_telemetry(shipments):
         pack_time = datetime.fromisoformat(shipment["pack_time"])
         temp_center = (shipment["temp_range_min"] + shipment["temp_range_max"]) / 2
         temp_range  = shipment["temp_range_max"] - shipment["temp_range_min"]
-        anomaly = ANOMALY_SCENARIOS.get(sid)
+
+        # Support both single-dict (legacy) and list of anomalies per shipment
+        raw = ANOMALY_SCENARIOS.get(sid)
+        anomaly_list = raw if isinstance(raw, list) else ([raw] if raw else [])
 
         total_readings = int((total_hrs * 60) / reading_interval_min) + 1
 
@@ -362,16 +431,20 @@ def generate_telemetry(shipments):
             leg, progress = get_leg_at_hour(elapsed_hrs, legs)
             coords = interpolate_coords(leg["start_coords"], leg["end_coords"], progress)
 
-            in_anomaly_window = (
-                anomaly
-                and anomaly["inject_at_hr"] <= elapsed_hrs
-                < anomaly["inject_at_hr"] + anomaly["duration_hrs"]
-            )
+            # Find the active anomaly window for this reading (first match wins)
+            active_anomaly = None
+            for anomaly in anomaly_list:
+                if anomaly["inject_at_hr"] <= elapsed_hrs < anomaly["inject_at_hr"] + anomaly["duration_hrs"]:
+                    active_anomaly = anomaly
+                    break
+
+            def _in(atype):
+                return active_anomaly is not None and active_anomaly["type"] == atype
 
             # Temperature
             normal_temp = temp_center + random.uniform(-temp_range * 0.15, temp_range * 0.15)
-            if in_anomaly_window and anomaly["type"] == "TEMP_BREACH":
-                normal_temp += anomaly["temp_offset"]
+            if _in("TEMP_BREACH") or _in("REEFER_FAILURE"):
+                normal_temp += active_anomaly.get("temp_offset", +5.0)
 
             # Speed
             if leg["mode"] == "truck":
@@ -380,25 +453,30 @@ def generate_telemetry(shipments):
                 speed = random.uniform(800.0, 900.0)
             else:
                 speed = 0.0
-            if in_anomaly_window and anomaly["type"] == "TRUCK_STALL":
-                speed = anomaly["speed_override"]
+            if _in("TRUCK_STALL") or _in("ROAD_ACCIDENT"):
+                speed = active_anomaly.get("speed_override", 0.0)
+
+            # Shock
+            shock = round(random.uniform(0.01, 0.5), 3)
+            if _in("ROAD_ACCIDENT"):
+                shock = active_anomaly.get("shock_g_override", 4.5)
 
             # Door
             door_open = False
-            if in_anomaly_window and anomaly["type"] == "DOOR_BREACH":
-                door_open = anomaly["door_override"]
+            if _in("DOOR_BREACH"):
+                door_open = active_anomaly.get("door_override", True)
 
             # Battery
             battery = max(5.0, 100.0 - (elapsed_hrs * 0.8) + random.uniform(-2, 2))
-            if in_anomaly_window and anomaly["type"] == "SENSOR_SILENCE":
-                battery = anomaly["battery_override"]
+            if _in("SENSOR_SILENCE"):
+                battery = active_anomaly.get("battery_override", 0.0)
 
             # Customs
             customs = "NOT_APPLICABLE"
             if leg["leg"] in ("dest_airport_customs", "origin_airport_wait"):
                 customs = "CLEARED"
-            if in_anomaly_window and anomaly["type"] == "CUSTOMS_HOLD":
-                customs = anomaly["customs_override"]
+            if _in("CUSTOMS_HOLD"):
+                customs = active_anomaly.get("customs_override", "HOLD_FDA_DOCS")
 
             # Flight status
             flight_status = "NOT_APPLICABLE"
@@ -406,11 +484,13 @@ def generate_telemetry(shipments):
                 flight_status = "IN_AIR"
             elif leg["leg"] in ("origin_airport_wait", "transit_hub_wait"):
                 flight_status = "ON_TIME"
-            if in_anomaly_window and anomaly["type"] == "FLIGHT_CANCEL":
-                flight_status = anomaly["flight_override"]
+            if _in("FLIGHT_CANCEL"):
+                flight_status = active_anomaly.get("flight_override", "CANCELLED")
 
-            # Sensor silence: drop the reading entirely
-            if in_anomaly_window and anomaly["type"] == "SENSOR_SILENCE":
+            # Sensor silence: only drop the reading if battery is truly 0
+            # (complete signal loss). Low-battery readings are kept so the
+            # workflow can detect SENSOR_SILENCE via battery < 20% threshold.
+            if _in("SENSOR_SILENCE") and battery <= 0.0:
                 continue
 
             all_readings.append({
@@ -425,7 +505,7 @@ def generate_telemetry(shipments):
                 "speed_kmh":        round(speed, 1),
                 "temp_c":           round(normal_temp, 2),
                 "humidity_pct":     round(random.uniform(35.0, 55.0), 1),
-                "shock_g":          round(random.uniform(0.01, 0.5), 3),
+                "shock_g":          shock,
                 "door_open":        door_open,
                 "battery_pct":      round(battery, 1),
                 "flight_status":    flight_status,
@@ -466,7 +546,9 @@ def main():
 
     print("\nInjected anomalies:")
     for sid, a in ANOMALY_SCENARIOS.items():
-        print(f"  {sid}: {a['type']:15s} at hour {a['inject_at_hr']:.1f} — {a['description']}")
+        entries = a if isinstance(a, list) else [a]
+        for e in entries:
+            print(f"  {sid}: {e['type']:15s} at hour {e['inject_at_hr']:.1f} -- {e['description']}")
 
     from collections import Counter
     counts = Counter(r["shipment_id"] for r in telemetry)
