@@ -131,6 +131,7 @@ class CargoState(TypedDict, total=False):
     stall_confirmed: bool
     stall_duration_mins: int
     stall_location: str
+    stall_cause: str
     flight_event_type: str
     delay_hrs: float
     cancelled: bool
@@ -200,6 +201,17 @@ class CargoState(TypedDict, total=False):
     ai_diagnosis: str
     ai_reasoning: str
 
+    # ── Anomaly Cooldown + Debounce ──
+    active_anomaly: str          # anomaly currently being handled (cleared on resolution)
+    anomaly_handled: bool        # True after human approved + execution complete
+    consecutive_anomaly_count: int  # how many consecutive readings show same anomaly
+    last_resolved_anomaly: str   # last anomaly that was resolved (for cooldown)
+    anomaly_cooldown_readings: int  # readings remaining in cooldown after resolution
+
+    # ── Pre-emptive Warning ──
+    buffer_warning_issued: bool  # True if low-buffer warning has already been sent this journey
+    buffer_warning_message: str  # The warning message text
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # ② INGEST AGENT
@@ -266,12 +278,19 @@ def detect_anomaly(state: CargoState) -> dict:
     severity = "LOW"
     now = datetime.now(timezone.utc).isoformat()
 
+    speed    = state.get("speed_kmh", 0.0)
+    leg_mode = state.get("leg_mode", "")
+
     if door:
         anomaly_type = "DOOR_BREACH"
         severity = "CRITICAL"
     elif battery > 0 and battery < 20.0:
         anomaly_type = "SENSOR_SILENCE"
         severity = "HIGH"
+    elif shock > 3.0 and speed == 0.0 and leg_mode == "truck":
+        # High shock spike immediately followed by full stop on a truck leg = road accident
+        anomaly_type = "ROAD_ACCIDENT"
+        severity = "CRITICAL"
     elif temp > t_max:
         deviation = temp - t_max
         if deviation > (t_max - t_min) * 0.5:
@@ -319,19 +338,72 @@ def detect_anomaly(state: CargoState) -> dict:
 
 
 def detect_truck_stall(state: CargoState) -> dict:
+    """Detect truck stall and use Claude to diagnose the likely cause
+    (flat tire, breakdown, accident, traffic, fuel shortage, rest stop)
+    and estimate realistic stall duration based on context."""
+    import os
+
     gps_stall = state.get("gps_stall_detected", False)
-    speed = state.get("speed_kmh", 0.0)
-    leg_mode = state.get("leg_mode", "")
-    lat = state.get("lat", 0.0)
-    lng = state.get("lng", 0.0)
+    speed     = state.get("speed_kmh", 0.0)
+    leg_mode  = state.get("leg_mode", "")
+    lat       = state.get("lat", 0.0)
+    lng       = state.get("lng", 0.0)
 
     stall = gps_stall and leg_mode == "truck" and speed == 0.0
-    duration = 30 if stall else 0
+    if not stall:
+        return {"stall_confirmed": False, "stall_duration_mins": 0, "stall_location": ""}
+
+    location_str = f"{lat:.4f},{lng:.4f}"
+
+    # ── Ask Claude to diagnose the stall cause and estimate duration ──
+    stall_cause = "unknown vehicle stoppage"
+    estimated_duration_mins = 30  # safe fallback
+
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        prompt = f"""A pharmaceutical cold-chain truck has stopped unexpectedly.
+Diagnose the most likely cause and estimate how long the delay will last.
+
+Context:
+- GPS location: {location_str}
+- Shock/vibration just before stop: {state.get('shock_g', 0.0)}g
+- Speed before stop: was moving, now 0 km/h
+- Battery: {state.get('battery_pct', 100)}%
+- Ambient temperature: {state.get('ambient_temp_c', 30)}°C
+- Route alerts: {state.get('route_alerts', 'NONE')}
+- Time of day (elapsed hrs into journey): {state.get('elapsed_hrs', 0)}h
+- Leg: {state.get('leg', 'road_transit')}
+
+Possible causes: flat tire, engine breakdown, road accident, traffic jam, fuel shortage, driver rest stop, road closure, weight check.
+
+Respond ONLY with valid JSON, no markdown:
+{{
+  "cause": "<most likely cause in 3-5 words>",
+  "estimated_duration_mins": <integer, realistic estimate>,
+  "reasoning": "<1 sentence>"
+}}"""
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+        stall_cause = parsed.get("cause", stall_cause)
+        estimated_duration_mins = int(parsed.get("estimated_duration_mins", 30))
+        estimated_duration_mins = max(5, min(estimated_duration_mins, 480))  # clamp 5min–8hrs
+    except Exception:
+        pass  # use fallback values
 
     return {
-        "stall_confirmed": stall,
-        "stall_duration_mins": duration,
-        "stall_location": f"{lat:.4f},{lng:.4f}" if stall else "",
+        "stall_confirmed": True,
+        "stall_duration_mins": estimated_duration_mins,
+        "stall_location": location_str,
+        "stall_cause": stall_cause,
     }
 
 
@@ -367,20 +439,66 @@ def monitor_flight_status(state: CargoState) -> dict:
 
 
 def monitor_customs(state: CargoState) -> dict:
+    """Detect customs hold and use Claude to estimate realistic hold duration
+    based on hold type, origin country, vaccine regulatory requirements."""
+    import os
+
     status = state.get("customs_status", "NOT_APPLICABLE")
 
-    if status.startswith("HOLD"):
-        reason = status.replace("HOLD_", "").replace("_", " ").title()
-        return {
-            "hold_reason": reason,
-            "hold_duration_est": 6.0,
-            "docs_valid": False,
-        }
-
-    if status == "CLEARED":
+    if not status.startswith("HOLD"):
+        if status == "CLEARED":
+            return {"hold_reason": "", "hold_duration_est": 0.0, "docs_valid": True}
         return {"hold_reason": "", "hold_duration_est": 0.0, "docs_valid": True}
 
-    return {"hold_reason": "", "hold_duration_est": 0.0, "docs_valid": True}
+    reason = status.replace("HOLD_", "").replace("_", " ").title()
+
+    # ── Ask Claude to estimate realistic hold duration ──
+    estimated_hrs = 6.0  # safe fallback
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        prompt = f"""A pharmaceutical vaccine shipment is being held at customs.
+Estimate how long this customs hold will realistically last.
+
+Hold details:
+- Hold reason code: {status}
+- Hold reason (parsed): {reason}
+- Destination airport: {state.get('dest_airport', 'JFK')}
+- Origin: {state.get('origin_airport', 'BOM')} via {state.get('transit_hub', 'DXB')}
+- Vaccine type: {state.get('vaccine_type', 'standard_flu')}
+- Carrier: {state.get('carrier_id', 'unknown')}
+- Elapsed journey time: {state.get('elapsed_hrs', 0)}h
+- Action window remaining: {state.get('action_window_hrs', 48)}h
+
+Consider: FDA inspection timelines, documentation re-submission time, broker escalation speed,
+time of day, typical JFK pharmaceutical clearance times.
+
+Respond ONLY with valid JSON, no markdown:
+{{
+  "estimated_duration_hrs": <realistic float>,
+  "severity": "LOW|MEDIUM|HIGH",
+  "reasoning": "<1 sentence>"
+}}"""
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+        estimated_hrs = float(parsed.get("estimated_duration_hrs", 6.0))
+        estimated_hrs = max(0.5, min(estimated_hrs, 72.0))  # clamp 30min–3days
+    except Exception:
+        pass
+
+    return {
+        "hold_reason": reason,
+        "hold_duration_est": estimated_hrs,
+        "docs_valid": False,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -492,31 +610,104 @@ def score_risk(state: CargoState) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 
 def check_viability_budget(state: CargoState) -> dict:
+    """Ask Claude to estimate realistic action time cost and recommend action
+    based on full situational context. Falls back to safe defaults if API unavailable."""
+    import os
+
     action_window = state.get("action_window_hrs", 48.0)
-    accumulated = state.get("total_accumulated_delay_hrs", 0.0)
-    spoilage = state.get("spoilage_prob", 0.0)
-    anomaly = state.get("anomaly_type", "NOMINAL")
-    delay = state.get("delay_hrs", 0.0)
+    accumulated   = state.get("total_accumulated_delay_hrs", 0.0)
+    spoilage      = state.get("spoilage_prob", 0.0)
+    anomaly       = state.get("anomaly_type", "NOMINAL")
+    delay         = state.get("delay_hrs", 0.0)
 
     accumulated += delay
     budget = action_window - accumulated
-
     viable = budget > 0 and spoilage < 0.90
 
-    ACTION_MAP = {
+    if not viable:
+        return {
+            "total_accumulated_delay_hrs": round(accumulated, 2),
+            "delay_budget_hrs": round(budget, 2),
+            "shipment_viable": False,
+            "recommended_action": "Declare compromised — trigger emergency resupply",
+            "action_time_cost_hrs": 0.0,
+        }
+
+    if anomaly == "NOMINAL":
+        return {
+            "total_accumulated_delay_hrs": round(accumulated, 2),
+            "delay_budget_hrs": round(budget, 2),
+            "shipment_viable": True,
+            "recommended_action": "Continue monitoring",
+            "action_time_cost_hrs": 0.0,
+        }
+
+    # ── Safe fallback values (used if Claude API unavailable) ──
+    FALLBACK = {
         "TEMP_BREACH":    ("Divert to nearest cold storage", 2.0),
         "REEFER_FAILURE": ("Emergency vehicle swap", 1.5),
         "TRUCK_STALL":    ("Dispatch alternate carrier", 1.0),
+        "ROAD_ACCIDENT":  ("Emergency services + alternate carrier", 2.5),
         "FLIGHT_CANCEL":  ("Rebook next available cargo flight", 4.0),
-        "CUSTOMS_HOLD":   ("Escalate to customs broker", 0.5),
-        "SENSOR_SILENCE": ("Assume breach protocol", 0.5),
+        "CUSTOMS_HOLD":   ("Escalate to customs broker", 2.0),
+        "SENSOR_SILENCE": ("Assume breach protocol, inspect at next stop", 0.5),
         "DOOR_BREACH":    ("Integrity inspection at next stop", 1.0),
+        "UNKNOWN":        ("Immediate manual inspection", 1.0),
     }
+    fallback_action, fallback_cost = FALLBACK.get(anomaly, ("Investigate anomaly", 1.0))
 
-    action, cost = ACTION_MAP.get(anomaly, ("Continue monitoring", 0.0))
-    if not viable:
-        action = "Declare compromised -- trigger emergency resupply"
-        cost = 0.0
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+        context = f"""You are a pharmaceutical cold-chain logistics expert.
+A vaccine shipment has encountered an anomaly and you must estimate:
+1. The most appropriate immediate action
+2. A realistic time cost (hours) for that action given the specific context
+
+Shipment context:
+- Anomaly type: {anomaly}
+- Vaccine type: {state.get('vaccine_type', 'unknown')}
+- Current leg: {state.get('leg', 'unknown')} ({state.get('leg_mode', 'unknown')})
+- Location: lat={state.get('lat', '?')}, lng={state.get('lng', '?')}
+- Temperature: {state.get('normalized_temp_c', state.get('temp_c', '?'))}°C (safe: {state.get('temp_range_min','?')}–{state.get('temp_range_max','?')}°C)
+- Shock/vibration: {state.get('shock_g', '?')}g
+- Stall duration: {state.get('stall_duration_mins', 0)} min
+- Flight status: {state.get('flight_status', 'N/A')}
+- Customs hold reason: {state.get('hold_reason', 'N/A')}
+- Delay so far: {delay:.1f}h  |  Action window remaining: {budget:.1f}h
+- Spoilage probability: {spoilage:.1%}
+- Route alerts: {state.get('route_alerts', 'NONE')}
+- Airport conditions: {state.get('airport_conditions', 'NORMAL')}
+- Ambient temperature: {state.get('ambient_temp_c', '?')}°C
+- Carrier: {state.get('carrier_id', 'unknown')}
+- Stall location: {state.get('stall_location', 'unknown')}
+
+Respond ONLY with valid JSON, no markdown:
+{{
+  "recommended_action": "<specific actionable step, 1 sentence>",
+  "estimated_time_hrs": <realistic float, e.g. 1.5>,
+  "reasoning": "<1-2 sentences explaining the estimate>"
+}}"""
+
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            messages=[{"role": "user", "content": context}],
+        )
+        raw = response.content[0].text.strip()
+        # Strip markdown fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+        action = parsed.get("recommended_action", fallback_action)
+        cost   = float(parsed.get("estimated_time_hrs", fallback_cost))
+        cost   = max(0.0, min(cost, 24.0))  # sanity clamp
+
+    except Exception:
+        action = fallback_action
+        cost   = fallback_cost
 
     return {
         "total_accumulated_delay_hrs": round(accumulated, 2),
@@ -528,21 +719,61 @@ def check_viability_budget(state: CargoState) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# ⑤-B  PRE-EMPTIVE BUFFER WARNING
+# ═══════════════════════════════════════════════════════════════════════
+
+def check_buffer_warning(state: CargoState) -> dict:
+    """Fire a proactive operator warning when delay budget is shrinking
+    toward a critical threshold — before it becomes an emergency.
+    Issues at most once per journey to avoid noise. No cascade triggered."""
+    budget   = state.get("delay_budget_hrs", 999.0)
+    anomaly  = state.get("anomaly_type", "NOMINAL")
+    already_warned = state.get("buffer_warning_issued", False)
+    viable   = state.get("shipment_viable", True)
+
+    # Only warn on NOMINAL (no active anomaly), when buffer is low, and only once
+    LOW_BUFFER_THRESHOLD = 8.0   # hours — warn when <8h of buffer remains
+    if (
+        not already_warned
+        and viable
+        and anomaly == "NOMINAL"
+        and 0 < budget < LOW_BUFFER_THRESHOLD
+    ):
+        sid      = state.get("shipment_id", "")
+        hospital = state.get("destination_hospital", "hospital")
+        vtype    = state.get("vaccine_type", "")
+        elapsed  = state.get("elapsed_hrs", 0.0)
+        accumulated = state.get("total_accumulated_delay_hrs", 0.0)
+
+        msg = (
+            f"LOW BUFFER WARNING — {sid}: Only {budget:.1f}h of delay buffer remaining "
+            f"(accumulated delay: {accumulated:.1f}h, elapsed: {elapsed:.1f}h). "
+            f"No active anomaly — shipment is on track but has little margin left. "
+            f"Consider pre-positioning cold storage near {hospital} and alerting "
+            f"backup carriers. Vaccine: {vtype}."
+        )
+        return {
+            "buffer_warning_issued": True,
+            "buffer_warning_message": msg,
+        }
+
+    return {}
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # ⑥ DECISION ORCHESTRATOR
 # ═══════════════════════════════════════════════════════════════════════
 
 def orchestrate_decision(state: CargoState) -> dict:
     anomaly = state.get("anomaly_type", "NOMINAL")
     viable = state.get("shipment_viable", True)
-    spoilage = state.get("spoilage_prob", 0.0)
     stall = state.get("stall_confirmed", False)
     cancelled = state.get("cancelled", False)
     hold = state.get("hold_reason", "")
     silence = state.get("sensor_silence", False)
     door = state.get("door_open", False)
 
-    cascade = anomaly != "NOMINAL" or not viable
-
+    # ── Resolve effective anomaly type ──
     effective_anomaly = anomaly
     if not viable:
         effective_anomaly = "NOT_VIABLE"
@@ -557,6 +788,49 @@ def orchestrate_decision(state: CargoState) -> dict:
     elif door and anomaly == "NOMINAL":
         effective_anomaly = "DOOR_BREACH"
 
+    # ── Debounce: count consecutive readings with same anomaly ──
+    # Only escalate to full cascade after 2+ consecutive readings (except
+    # DOOR_BREACH and NOT_VIABLE which are always immediate).
+    prev_count = state.get("consecutive_anomaly_count", 0)
+    prev_anomaly_in_count = state.get("active_anomaly", "NOMINAL")
+    # Temperature and safety emergencies are always immediate — no debounce
+    # Only logistics anomalies (stall, flight, customs) benefit from debounce
+    IMMEDIATE_ANOMALIES = {
+        "DOOR_BREACH", "NOT_VIABLE", "REEFER_FAILURE",
+        "TEMP_BREACH", "SENSOR_SILENCE", "ROAD_ACCIDENT",
+    }
+    DEBOUNCE_THRESHOLD = 2   # readings before escalating
+
+    if effective_anomaly != "NOMINAL":
+        if prev_anomaly_in_count == effective_anomaly:
+            consecutive = prev_count + 1
+        else:
+            consecutive = 1
+    else:
+        consecutive = 0
+
+    # ── Cooldown: suppress re-trigger of an already-handled anomaly ──
+    # After operator approved+executed, anomaly_handled=True for N readings.
+    active_anomaly = state.get("active_anomaly", "NOMINAL")
+    anomaly_handled = state.get("anomaly_handled", False)
+    cooldown_remaining = state.get("anomaly_cooldown_readings", 0)
+
+    suppress = False
+    new_cooldown = max(0, cooldown_remaining - 1)
+
+    if anomaly_handled and effective_anomaly == active_anomaly and cooldown_remaining > 0:
+        # Same anomaly re-detected while we're in cooldown — suppress
+        suppress = True
+        effective_anomaly = "NOMINAL"
+
+    # ── Debounce gate ──
+    if not suppress and effective_anomaly not in IMMEDIATE_ANOMALIES and effective_anomaly != "NOMINAL":
+        if consecutive < DEBOUNCE_THRESHOLD:
+            # Not enough consecutive readings — downgrade to WATCH, don't cascade
+            suppress = True
+            effective_anomaly = "NOMINAL"
+
+    cascade = effective_anomaly != "NOMINAL"
     dispatched = []
     if cascade:
         dispatched = [
@@ -568,6 +842,10 @@ def orchestrate_decision(state: CargoState) -> dict:
         "anomaly_type": effective_anomaly,
         "cascade_triggered": cascade,
         "actions_dispatched": json.dumps(dispatched),
+        "consecutive_anomaly_count": consecutive,
+        "active_anomaly": effective_anomaly if cascade else active_anomaly,
+        "anomaly_cooldown_readings": new_cooldown,
+        "anomaly_handled": anomaly_handled if not cascade else False,
     }
 
 
@@ -582,6 +860,9 @@ def route_orchestrator(state: CargoState) -> str:
     }
     if anomaly in valid:
         return anomaly
+    if anomaly == "ROAD_ACCIDENT":
+        # Road accidents need AI contextual analysis — route to fallback agent
+        return "UNKNOWN"
     if anomaly != "NOMINAL":
         # Any unrecognised non-nominal anomaly goes to the AI fallback agent
         return "UNKNOWN"
@@ -679,58 +960,217 @@ def flight_rebooking_agent(state: CargoState) -> dict:
 
 
 def compliance_escalation_agent(state: CargoState) -> dict:
-    hold_reason = state.get("hold_reason", "Unknown")
-    docs_valid = state.get("docs_valid", True)
+    """Use Claude to select the best customs broker for this hold type,
+    identify exactly which documents are missing, and estimate resolution time."""
+    import os
 
+    hold_reason = state.get("hold_reason", "Unknown")
+    docs_valid  = state.get("docs_valid", True)
+
+    # ── Default fallback: pick first broker, generic docs ──
     broker = CUSTOMS_BROKERS[0]
-    missing = []
-    if not docs_valid:
-        if "fda" in hold_reason.lower():
-            missing = ["FDA Form 2877", "Certificate of Analysis", "Temperature logger data"]
-        else:
-            missing = ["Cold chain certification", "Importer of Record documentation"]
+    missing = ["Cold chain certification", "Importer of Record documentation"]
+    if "fda" in hold_reason.lower():
+        missing = ["FDA Form 2877", "Certificate of Analysis", "Temperature logger data"]
+    response_hrs = float(broker.get("response_hrs", 2.0))
+
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        broker_list = json.dumps([
+            {"name": b["name"], "specialization": b.get("specialization", "general"),
+             "response_hrs": b.get("response_hrs", 2.0)}
+            for b in CUSTOMS_BROKERS
+        ])
+        prompt = f"""A pharmaceutical vaccine shipment is held at customs.
+Select the best customs broker and identify the exact missing documents.
+
+Hold details:
+- Hold reason: {hold_reason}
+- Customs status code: {state.get('customs_status', 'HOLD')}
+- Destination: {state.get('dest_airport', 'JFK')} airport
+- Vaccine type: {state.get('vaccine_type', 'standard_flu')}
+- Carrier: {state.get('carrier_id', 'unknown')}
+- Hold duration estimate: {state.get('hold_duration_est', 6)}h
+
+Available brokers: {broker_list}
+
+Based on the hold reason, select the most appropriate broker and list
+the exact documents that need to be filed to resolve this hold.
+
+Respond ONLY with valid JSON, no markdown:
+{{
+  "broker_index": <0-based index from available brokers list>,
+  "missing_documents": ["<doc1>", "<doc2>", ...],
+  "resolution_steps": "<1-2 sentences on how to resolve>",
+  "estimated_response_hrs": <float>
+}}"""
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+
+        idx = int(parsed.get("broker_index", 0))
+        if 0 <= idx < len(CUSTOMS_BROKERS):
+            broker = CUSTOMS_BROKERS[idx]
+        missing = parsed.get("missing_documents", missing)
+        response_hrs = float(parsed.get("estimated_response_hrs", response_hrs))
+        response_hrs = max(0.25, min(response_hrs, 48.0))
+    except Exception:
+        pass
 
     return {
         "escalation_contact": f"{broker['name']}: {broker['contact']} ({broker['email']})",
         "missing_docs_list": json.dumps(missing),
         "broker_notified": True,
-        "time_impact_hrs": float(broker["response_hrs"]),
+        "time_impact_hrs": response_hrs,
     }
 
 
 def assume_breach_agent(state: CargoState) -> dict:
-    battery = state.get("battery_pct", 100.0)
-    temp = state.get("normalized_temp_c", state.get("temp_c", 5.0))
+    """Use Claude to calculate realistic spoilage probability for sensor silence
+    based on last known temperature, time since silence, ambient conditions,
+    and vaccine-specific viability curve — instead of hardcoded 70%."""
+    import os
 
-    cause = "Tracker battery death" if battery <= 0 else "Sensor silence > 5 min"
+    battery  = state.get("battery_pct", 100.0)
+    temp     = state.get("normalized_temp_c", state.get("temp_c", 5.0))
+    vtype    = state.get("vaccine_type", "standard_flu")
+    elapsed  = state.get("elapsed_hrs", 0.0)
+    ambient  = state.get("ambient_temp_c", 30.0)
+    th       = get_vaccine_threshold(vtype)
+    cause    = "Tracker battery death" if battery <= 0 else "Sensor silence > 5 min"
+
+    spoilage = 0.70  # fallback
+    narrative_detail = "Treating as worst-case temperature excursion per GDP 2013/C 343/01 Section 9.3."
+
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        prompt = f"""A pharmaceutical vaccine shipment's temperature sensor has gone silent.
+Calculate the realistic spoilage probability given the specific context.
+
+Details:
+- Cause: {cause}
+- Vaccine type: {vtype}
+- Safe temperature range: {th['temp_min']}°C to {th['temp_max']}°C
+- Last known container temperature: {temp}°C
+- Ambient/outside temperature: {ambient}°C
+- Elapsed journey time: {elapsed}h
+- Viability window: {state.get('viability_window_hrs', 96)}h
+- Battery level: {battery}%
+- Leg: {state.get('leg', 'unknown')} ({state.get('leg_mode', 'unknown')})
+
+Consider: how quickly would temperature rise given ambient conditions,
+how long has the sensor been silent (1 reading = 30 min), and the
+vaccine's sensitivity to temperature excursions.
+
+Respond ONLY with valid JSON, no markdown:
+{{
+  "spoilage_probability": <float 0.0-1.0>,
+  "severity": "CRITICAL|HIGH|MEDIUM",
+  "reasoning": "<2 sentences explaining the calculation>"
+}}"""
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+        spoilage = float(parsed.get("spoilage_probability", 0.70))
+        spoilage = max(0.0, min(spoilage, 1.0))
+        narrative_detail = parsed.get("reasoning", narrative_detail)
+    except Exception:
+        pass
 
     return {
         "anomaly_type": "SENSOR_SILENCE",
         "severity": "CRITICAL",
         "risk_narrative": (
-            f"ASSUMED BREACH: {cause}. Last known temp: {temp}C. "
-            f"Battery: {battery}%. Treating as worst-case temperature excursion "
-            f"per GDP 2013/C 343/01 Section 9.3 (monitoring gaps)."
+            f"SENSOR SILENCE: {cause}. Last known temp: {temp}°C (safe: {th['temp_min']}–{th['temp_max']}°C). "
+            f"Ambient: {ambient}°C. {narrative_detail}"
         ),
-        "spoilage_prob": 0.70,
+        "spoilage_prob": round(spoilage, 3),
     }
 
 
 def door_breach_agent(state: CargoState) -> dict:
-    temp = state.get("normalized_temp_c", state.get("temp_c", 5.0))
+    """Use Claude to calculate spoilage probability for door breach based on
+    actual exposure duration, temperature delta, ambient conditions, and
+    vaccine type — instead of hardcoded 60%."""
+    import os
+
+    temp    = state.get("normalized_temp_c", state.get("temp_c", 5.0))
     ambient = state.get("ambient_temp_c", 30.0)
-    leg = state.get("leg", "")
+    leg     = state.get("leg", "")
+    vtype   = state.get("vaccine_type", "standard_flu")
+    th      = get_vaccine_threshold(vtype)
+
+    spoilage = 0.60  # fallback
+    narrative_detail = "Immediate inspection required per WHO/PQS/E06/IN05.4."
+
+    try:
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        temp_delta = abs(ambient - temp)
+        prompt = f"""A pharmaceutical vaccine container door was opened during transit.
+Calculate the realistic spoilage probability.
+
+Details:
+- Vaccine type: {vtype}
+- Safe temperature range: {th['temp_min']}°C to {th['temp_max']}°C
+- Container temperature at breach: {temp}°C
+- Ambient/outside temperature: {ambient}°C
+- Temperature delta (exposure risk): {temp_delta:.1f}°C
+- Leg where breach occurred: {leg.replace('_', ' ')}
+- Elapsed journey time: {state.get('elapsed_hrs', 0)}h
+- Shock at time of breach: {state.get('shock_g', 0)}g
+
+Consider: duration of exposure (one reading = 30 min), temperature differential,
+vaccine sensitivity, and whether the container temperature would have been
+significantly affected by one door-open event.
+
+Respond ONLY with valid JSON, no markdown:
+{{
+  "spoilage_probability": <float 0.0-1.0>,
+  "severity": "CRITICAL|HIGH|MEDIUM",
+  "reasoning": "<2 sentences>"
+}}"""
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+        spoilage = float(parsed.get("spoilage_probability", 0.60))
+        spoilage = max(0.0, min(spoilage, 1.0))
+        narrative_detail = parsed.get("reasoning", narrative_detail)
+    except Exception:
+        pass
 
     return {
         "anomaly_type": "DOOR_BREACH",
         "severity": "CRITICAL",
         "risk_narrative": (
             f"CONTAINER BREACH: Door opened during {leg.replace('_', ' ')}. "
-            f"Container temp: {temp}C, ambient: {ambient}C. "
-            f"Any exposure compromises vaccine integrity per "
-            f"WHO/PQS/E06/IN05.4. Immediate inspection required."
+            f"Container: {temp}°C, ambient: {ambient}°C (delta: {abs(ambient-temp):.1f}°C). "
+            f"{narrative_detail}"
         ),
-        "spoilage_prob": 0.60,
+        "spoilage_prob": round(spoilage, 3),
     }
 
 
@@ -1246,7 +1686,7 @@ def update_inventory_forecast(state: CargoState) -> dict:
             f"usage {daily_rate}/day). "
             + (
                 f"Delay of {delay:.1f}h projects stock to ~{projected:.0f} units — "
-                f"BELOW minimum threshold of {minimum}. Backup allocation triggered."
+                f"SHORTFALL — BELOW minimum threshold of {minimum}. Backup allocation triggered."
                 if shortfall else
                 f"Delay of {delay:.1f}h projects stock to ~{projected:.0f} units — "
                 f"above minimum ({minimum}). No shortfall expected."
@@ -1294,6 +1734,7 @@ def write_audit_log(state: CargoState) -> dict:
         "format": "FDA 21 CFR Part 11 compliant",
     }
 
+    resolved_anomaly = state.get("anomaly_type", "NOMINAL")
     return {
         "audit_log_id": log_id,
         "compliance_flags": json.dumps([
@@ -1301,6 +1742,11 @@ def write_audit_log(state: CargoState) -> dict:
             "GDP_LOGGED",
             "HUMAN_APPROVAL_RECORDED" if state.get("approved_by") else "PENDING_APPROVAL",
         ]),
+        # Mark anomaly as handled — suppress re-triggering for next 4 readings (cooldown)
+        "anomaly_handled": True,
+        "last_resolved_anomaly": resolved_anomaly,
+        "anomaly_cooldown_readings": 4,
+        "consecutive_anomaly_count": 0,
     }
 
 
@@ -1416,6 +1862,7 @@ def build_cargo_monitor_graph(mode: str = "loop") -> StateGraph:
     builder.add_node("monitor_customs", monitor_customs)
     builder.add_node("score_risk", score_risk)
     builder.add_node("check_viability_budget", check_viability_budget)
+    builder.add_node("check_buffer_warning", check_buffer_warning)
     builder.add_node("orchestrate_decision", orchestrate_decision)
     builder.add_node("continue_monitoring", continue_monitoring)
     builder.add_node("cold_storage_intervention", cold_storage_intervention)
@@ -1461,7 +1908,8 @@ def build_cargo_monitor_graph(mode: str = "loop") -> StateGraph:
     builder.add_edge("monitor_customs", "score_risk")
 
     builder.add_edge("score_risk", "check_viability_budget")
-    builder.add_edge("check_viability_budget", "orchestrate_decision")
+    builder.add_edge("check_viability_budget", "check_buffer_warning")
+    builder.add_edge("check_buffer_warning", "orchestrate_decision")
 
     builder.add_conditional_edges(
         "orchestrate_decision", route_orchestrator,

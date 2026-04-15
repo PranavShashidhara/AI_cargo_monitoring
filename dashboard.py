@@ -34,7 +34,9 @@ with open(ROOT / "data" / "shipments.json") as f:
 with open(ROOT / "data" / "telemetry.json") as f:
     TELEMETRY = json.load(f)
 
-TOTAL_ROUTE_HRS = 38.5
+# TOTAL_ROUTE_HRS is now read per-shipment from shipments.json (total_route_hrs field)
+# This dict is populated lazily when each shipment is first started
+_SHIPMENT_ROUTE_HRS: dict = {}
 
 # ── Compile the LangGraph in stream mode ──
 checkpointer = InMemorySaver()
@@ -61,14 +63,18 @@ def _enrich(state: dict) -> dict:
     delays = state.get("total_accumulated_delay_hrs", 0.0)
     viability = state.get("viability_window_hrs", 96.0)
 
+    # Look up per-shipment route hours (dynamic — not hardcoded)
+    sid = state.get("shipment_id", "")
+    total_route_hrs = _SHIPMENT_ROUTE_HRS.get(sid, 35.5)
+
     # ETA = time remaining on normal route + any accumulated delay from interventions
-    remaining = max(0.0, TOTAL_ROUTE_HRS - elapsed)
+    remaining = max(0.0, total_route_hrs - elapsed)
     state["eta_destination_hrs"] = round(remaining + delays, 1)
 
     # Buffer = how much MORE delay we can absorb before viability expires.
     # Formula: viability_window - normal_route_time - accumulated_intervention_delays
     # This only decreases when an intervention adds delay — NOT as time passes normally.
-    state["buffer_hrs"] = round(max(0.0, viability - TOTAL_ROUTE_HRS - delays), 1)
+    state["buffer_hrs"] = round(max(0.0, viability - total_route_hrs - delays), 1)
 
     state["delay_added_hrs"] = state.get(
         "time_impact_hrs", state.get("delay_hrs", 0.0)
@@ -101,6 +107,9 @@ def start_shipment(body: dict) -> dict:
     with graph_lock:
         thread_counter += 1
         tid = f"ship-{sid}-{thread_counter}"
+
+    # Cache this shipment's actual route duration for ETA/buffer calculations
+    _SHIPMENT_ROUTE_HRS[sid] = float(shipment.get("total_route_hrs", 35.5))
 
     first = readings[0]
     initial_state = {

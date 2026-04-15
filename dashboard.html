@@ -193,8 +193,56 @@ select.speed{background:var(--bg-2);color:var(--t1);border:1px solid var(--borde
 // No setInterval is used. Readings chain via setTimeout inside handleState only.
 let shipments=[],telemetry=[],selected=null,idx=0,playing=false,speed=400,lastState={},feedCount=0,inFlight=false;
 let wallStart=null,wallTimer=null;
-let map,routeLayer,posMarker,anomalyMarkers=[],rerouteLine=null,csMarker=null;
-const WP=[{name:"Mumbai",lat:19.076,lng:72.878},{name:"BOM",lat:19.090,lng:72.866},{name:"DXB",lat:25.253,lng:55.366},{name:"JFK",lat:40.641,lng:-73.778},{name:"Hospital",lat:40.713,lng:-74.002}];
+let map,routeLayer,posMarker,anomalyMarkers=[],rerouteLine=null,rerouteDestLine=null,csMarker=null;
+
+// Per-profile route definitions: waypoints + segment modes
+const ROUTE_PROFILES_MAP = {
+  'international_bom_jfk': {
+    waypoints:[
+      {name:'Mumbai',       lat:19.076, lng:72.878},
+      {name:'BOM Airport',  lat:19.090, lng:72.866},
+      {name:'DXB Hub',      lat:25.253, lng:55.366},
+      {name:'JFK Airport',  lat:40.641, lng:-73.778},
+      {name:'Hospital',     lat:40.713, lng:-74.006},
+    ],
+    segments:[
+      {from:0,to:1,mode:'truck'},
+      {from:1,to:2,mode:'flight'},
+      {from:2,to:3,mode:'flight'},
+      {from:3,to:4,mode:'truck'},
+    ]
+  },
+  'domestic_mum_ahm': {
+    waypoints:[
+      {name:'Mumbai',       lat:19.076, lng:72.878},
+      {name:'Ahmedabad',    lat:23.023, lng:72.571},
+      {name:'Hospital',     lat:23.030, lng:72.560},
+    ],
+    segments:[
+      {from:0,to:1,mode:'truck'},
+      {from:1,to:2,mode:'truck'},
+    ]
+  },
+  'regional_mum_del': {
+    waypoints:[
+      {name:'Mumbai',       lat:19.076, lng:72.878},
+      {name:'BOM Airport',  lat:19.090, lng:72.866},
+      {name:'DEL Airport',  lat:28.556, lng:77.100},
+      {name:'Delhi Hosp.',  lat:28.614, lng:77.209},
+    ],
+    segments:[
+      {from:0,to:1,mode:'truck'},
+      {from:1,to:2,mode:'flight'},
+      {from:2,to:3,mode:'truck'},
+    ]
+  }
+};
+
+function getRouteProfile(){
+  const key = selected?.route_profile || 'international_bom_jfk';
+  return ROUTE_PROFILES_MAP[key] || ROUTE_PROFILES_MAP['international_bom_jfk'];
+}
+
 let chart;
 
 function fmtHrs(h){if(h==null||isNaN(h))return'--';if(h>=48)return Math.floor(h/24)+'d '+Math.round(h%24)+'h';if(h>=1)return h.toFixed(1)+'h';return Math.round(h*60)+'m';}
@@ -207,7 +255,7 @@ function renderSidebar(){
   document.getElementById('ship-list').innerHTML=shipments.map(s=>`
     <div class="ship-card" id="card-${s.shipment_id}" onclick="selectShipment('${s.shipment_id}')">
       <div class="sc-top"><span class="dot gray"></span>${s.shipment_id}</div>
-      <div class="sc-route">${s.origin_airport} &rarr; ${s.transit_hub} &rarr; ${s.dest_airport} &rarr; ${(s.destination_hospital||'').substring(0,16)||'Hospital'}</div>
+      <div class="sc-route">${s.route_label||s.origin_airport+' \u2192 '+s.dest_airport} &rarr; ${(s.destination_hospital||'').substring(0,18)||'Hospital'}</div>
       <div class="sc-bottom"><span class="sc-vaccine">${s.vaccine_type.replace(/_/g,' ')}</span><span class="badge ready">Ready</span></div>
     </div>`).join('');
 }
@@ -241,7 +289,7 @@ function updateTopbar(){
   const el=document.getElementById('tb-info');if(!selected)return;
   const pct=telemetry.length?Math.round(idx/telemetry.length*100):0;
   el.innerHTML=`<h2>${selected.shipment_id} &mdash; ${selected.vaccine_type.replace(/_/g,' ')}</h2>
-    <div class="tb-route-text">${selected.origin_airport} &rarr; ${selected.transit_hub} &rarr; ${selected.dest_airport} &rarr; ${selected.destination_hospital||'Hospital'}</div>
+    <div class="tb-route-text">${selected.route_label||selected.origin_airport+' \u2192 '+selected.dest_airport} &rarr; ${selected.destination_hospital||'Hospital'}</div>
     <div class="progress-bar"><div class="fill" style="width:${pct}%"></div></div>`;
 }
 
@@ -276,12 +324,24 @@ function initMap(){
 }
 function drawRoute(){
   routeLayer.clearLayers();if(posMarker){map.removeLayer(posMarker);posMarker=null;}
-  const pts=WP.map(w=>[w.lat,w.lng]);
-  L.polyline([pts[0],pts[1]],{color:'#6366f1',weight:2.5,opacity:.7}).addTo(routeLayer);
-  L.polyline([pts[3],pts[4]],{color:'#6366f1',weight:2.5,opacity:.7}).addTo(routeLayer);
-  L.polyline([pts[1],pts[2]],{color:'#a78bfa',weight:2,dashArray:'8 6',opacity:.5}).addTo(routeLayer);
-  L.polyline([pts[2],pts[3]],{color:'#a78bfa',weight:2,dashArray:'8 6',opacity:.5}).addTo(routeLayer);
-  WP.forEach(w=>{L.circleMarker([w.lat,w.lng],{radius:5,color:'#6366f1',fillColor:'#6366f1',fillOpacity:.9,weight:1}).addTo(routeLayer);L.marker([w.lat,w.lng],{icon:L.divIcon({className:'waypoint-label',html:w.name,iconAnchor:[-10,-6]})}).addTo(routeLayer);});
+  const profile = getRouteProfile();
+  const wps = profile.waypoints;
+  const pts = wps.map(w=>[w.lat,w.lng]);
+  // Draw each segment with mode-appropriate style
+  profile.segments.forEach(seg=>{
+    const isFlight = seg.mode==='flight';
+    L.polyline([pts[seg.from],pts[seg.to]],{
+      color: isFlight?'#a78bfa':'#6366f1',
+      weight: isFlight?2:2.5,
+      dashArray: isFlight?'8 6':null,
+      opacity: isFlight?.5:.7
+    }).addTo(routeLayer);
+  });
+  // Waypoint markers + labels
+  wps.forEach(w=>{
+    L.circleMarker([w.lat,w.lng],{radius:5,color:'#6366f1',fillColor:'#6366f1',fillOpacity:.9,weight:1}).addTo(routeLayer);
+    L.marker([w.lat,w.lng],{icon:L.divIcon({className:'waypoint-label',html:w.name,iconAnchor:[-10,-6]})}).addTo(routeLayer);
+  });
   posMarker=L.marker(pts[0],{icon:vehicleIcon('truck',0,false)}).addTo(map);
   map.fitBounds(L.latLngBounds(pts).pad(.15));
 }
@@ -295,13 +355,40 @@ function moveVehicle(lat,lng,mode,heading,danger){
   if(!posMarker)return;posMarker.setLatLng([lat,lng]);posMarker.setIcon(vehicleIcon(mode,heading,danger));
 }
 function pinAnomaly(lat,lng,label){anomalyMarkers.push(L.circleMarker([lat,lng],{radius:9,color:'#ef4444',fillColor:'#ef4444',fillOpacity:.2,weight:2}).bindPopup(label).addTo(map));}
-function showReroute(fromLat,fromLng,toLat,toLng,label){
+function drawReroutePath(st){
   clearReroute();
-  rerouteLine=L.polyline([[fromLat,fromLng],[toLat,toLng]],{color:'#f97316',weight:3,dashArray:'6 4',opacity:.85}).addTo(map);
-  csMarker=L.marker([toLat,toLng],{icon:L.divIcon({className:'',html:'<div class="cs-icon">&#10052;&#65039;</div>',iconSize:[28,28],iconAnchor:[14,14]})}).bindPopup(label).addTo(map);
-  map.panTo([(fromLat+toLat)/2,(fromLng+toLng)/2]);
+  const curLat=st.lat||0, curLng=st.lng||0;
+  const hasStop=st.cold_storage_lat&&st.cold_storage_lng;
+  const stopLat=st.cold_storage_lat, stopLng=st.cold_storage_lng;
+  const stopLabel=st.cold_storage_location||'Reroute Stop';
+  const wps=getRouteProfile().waypoints;
+  const dest=wps[wps.length-1];
+
+  if(hasStop){
+    // current → reroute stop (orange solid — confirmed new leg)
+    rerouteLine=L.polyline([[curLat,curLng],[stopLat,stopLng]],
+      {color:'#f97316',weight:3,opacity:.9}).addTo(map);
+    // reroute stop → final destination (orange dashed — onward path)
+    rerouteDestLine=L.polyline([[stopLat,stopLng],[dest.lat,dest.lng]],
+      {color:'#f97316',weight:2,dashArray:'6 5',opacity:.65}).addTo(map);
+    // stop marker
+    csMarker=L.marker([stopLat,stopLng],{icon:L.divIcon({
+      className:'',html:'<div class="cs-icon">&#10052;&#65039;</div>',iconSize:[28,28],iconAnchor:[14,14]
+    })}).bindPopup(stopLabel).addTo(map);
+    // fit map to show full new path
+    map.fitBounds(L.latLngBounds([[curLat,curLng],[stopLat,stopLng],[dest.lat,dest.lng]]).pad(.2));
+  } else {
+    // No specific stop (e.g. flight rebook, carrier swap) — draw direct orange line to destination
+    rerouteLine=L.polyline([[curLat,curLng],[dest.lat,dest.lng]],
+      {color:'#f97316',weight:2.5,dashArray:'8 5',opacity:.8}).addTo(map);
+    map.fitBounds(L.latLngBounds([[curLat,curLng],[dest.lat,dest.lng]]).pad(.2));
+  }
 }
-function clearReroute(){if(rerouteLine){map.removeLayer(rerouteLine);rerouteLine=null;}if(csMarker){map.removeLayer(csMarker);csMarker=null;}}
+function clearReroute(){
+  if(rerouteLine){map.removeLayer(rerouteLine);rerouteLine=null;}
+  if(rerouteDestLine){map.removeLayer(rerouteDestLine);rerouteDestLine=null;}
+  if(csMarker){map.removeLayer(csMarker);csMarker=null;}
+}
 
 /* ═══════ CHART ═══════ */
 function initChart(){
@@ -584,9 +671,7 @@ function handleState(st){
       ?`<br><b>Spoilage Risk:</b> ${((st.spoilage_prob||0)*100).toFixed(0)}% &nbsp;|&nbsp; <b>Buffer:</b> ${fmtHrs(st.buffer_hrs||0)}`:'';
     const nextActionLine=`<br><span style="color:var(--t2);font-size:11px;margin-top:4px;display:block">&#8594; <b>Next step:</b> ${st.recommended_action||'Review recommended actions'}</span>`;
     // Show proposed reroute on map so operator can visualise the proposal
-    if(st.cold_storage_lat&&st.cold_storage_lng){
-      showReroute(st.lat||0,st.lng||0,st.cold_storage_lat,st.cold_storage_lng,st.cold_storage_location||'Cold Storage');
-    }
+    drawReroutePath(st);
     addFeed('danger', anomalyTitle(st.anomaly_type),
       anomalyBody(st)+spoilagePart+nextActionLine,
       [{l:'&#9654; What to do next', c:'primary', fn:'showActionCards()'}]);
@@ -675,11 +760,8 @@ async function approveAction(){
 
   lastState=res;updateETA(res);
 
-  // Update map: show confirmed reroute after approval
-  if(res.cold_storage_lat&&res.cold_storage_lng){
-    showReroute(res.lat||0,res.lng||0,res.cold_storage_lat,res.cold_storage_lng,
-      '\u2713 Confirmed: '+(res.cold_storage_location||'Cold Storage'));
-  }
+  // Update map: draw full confirmed reroute path after approval
+  drawReroutePath(res);
 
   const intr=res._interrupt;
   if(intr&&intr.type==='next_reading')idx=intr.reading_index;
