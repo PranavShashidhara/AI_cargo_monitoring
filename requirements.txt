@@ -1,16 +1,3 @@
-# Agent Framework & LLMs
-langchain
-langchain-openai
-
-# Data Processing & ML (Monitoring & Risk Agents)
-pandas
-numpy
-scikit-learn
-sqlalchemy
-
-# Human-in-the-Loop UI & Visualizations
-streamlit
-plotly
-
-# Environment & Utilities
-python-dotenv
+langgraph
+langchain-core
+anthropic

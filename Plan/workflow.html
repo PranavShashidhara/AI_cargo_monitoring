@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Cargo Monitor — LangGraph Workflow</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #0a0e1a;
+    --bg2: #0f1525;
+    --bg3: #151c30;
+    --border: rgba(99,120,200,0.18);
+    --border-bright: rgba(99,120,200,0.45);
+    --node-ingest: #1a2a4a;
+    --node-detect: #1a1a3a;
+    --node-risk: #1a2a1a;
+    --node-orch: #2a1a2a;
+    --node-action: #2a1a10;
+    --node-hitl: #2a2200;
+    --node-exec: #102a20;
+    --node-end: #1a0a0a;
+    --accent-blue: #4a9eff;
+    --accent-purple: #9b7dff;
+    --accent-green: #3ddc84;
+    --accent-amber: #ffb347;
+    --accent-red: #ff6b6b;
+    --accent-teal: #4af0d0;
+    --text: #c8d4f0;
+    --text-dim: #6272a4;
+    --text-bright: #f0f4ff;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'DM Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 24px 16px 60px;
+  }
+
+  .header {
+    text-align: center;
+    margin-bottom: 32px;
+  }
+  .header h1 {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-bright);
+    letter-spacing: 0.04em;
+  }
+  .header p {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    font-family: var(--mono);
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+    margin-bottom: 28px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 2px;
+  }
+
+  .graph {
+    max-width: 960px;
+    margin: 0 auto;
+    position: relative;
+  }
+
+  /* ── SECTIONS ── */
+  .section {
+    margin-bottom: 8px;
+  }
+  .section-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    padding-left: 4px;
+    border-left: 2px solid var(--border-bright);
+  }
+
+  /* ── NODE BASE ── */
+  .row {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+    margin-bottom: 6px;
+    justify-content: center;
+  }
+
+  .node {
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    padding: 10px 14px;
+    position: relative;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    cursor: default;
+    flex-shrink: 0;
+  }
+  .node:hover {
+    border-color: var(--border-bright);
+    box-shadow: 0 0 16px rgba(74,158,255,0.12);
+  }
+
+  .node-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    margin-bottom: 3px;
+    white-space: nowrap;
+  }
+  .node-fn {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent-teal);
+    margin-bottom: 6px;
+    white-space: nowrap;
+  }
+  .node-fn span { color: var(--accent-purple); }
+
+  .node-data {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    line-height: 1.6;
+  }
+  .node-data .label {
+    color: var(--text-dim);
+    display: block;
+    margin-bottom: 2px;
+    font-size: 8px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .node-data .field {
+    color: #8899cc;
+    display: block;
+    padding-left: 8px;
+  }
+  .node-data .field::before { content: '↳ '; color: var(--border-bright); }
+
+  /* node type colors */
+  .n-start  { background: #0d1520; border-color: var(--accent-blue); }
+  .n-start .node-title { color: var(--accent-blue); }
+
+  .n-ingest { background: var(--node-ingest); }
+  .n-ingest .node-title { color: var(--accent-blue); }
+
+  .n-detect { background: var(--node-detect); }
+  .n-detect .node-title { color: var(--accent-purple); }
+
+  .n-risk   { background: var(--node-risk); }
+  .n-risk .node-title { color: var(--accent-green); }
+
+  .n-orch   { background: var(--node-orch); border-color: rgba(155,125,255,0.35); }
+  .n-orch .node-title { color: var(--accent-purple); }
+
+  .n-action { background: var(--node-action); }
+  .n-action .node-title { color: var(--accent-amber); }
+
+  .n-hitl   { background: var(--node-hitl); border: 2px dashed rgba(255,179,71,0.6); }
+  .n-hitl .node-title { color: var(--accent-amber); }
+  .n-hitl::before {
+    content: 'INTERRUPT';
+    position: absolute;
+    top: -9px; right: 10px;
+    font-family: var(--mono);
+    font-size: 8px;
+    color: var(--accent-amber);
+    background: var(--bg);
+    padding: 0 4px;
+    letter-spacing: 0.1em;
+  }
+
+  .n-exec   { background: var(--node-exec); }
+  .n-exec .node-title { color: var(--accent-teal); }
+
+  .n-log    { background: #0d1a14; border-color: rgba(61,220,132,0.3); }
+  .n-log .node-title { color: var(--accent-green); }
+
+  .n-end    { background: #1a0a0a; border-color: var(--accent-red); }
+  .n-end .node-title { color: var(--accent-red); }
+
+  .n-loop   { background: #0d1520; border-color: rgba(74,240,208,0.3); border-style: dashed; }
+  .n-loop .node-title { color: var(--accent-teal); }
+
+  /* ── CONNECTOR ARROWS ── */
+  .connector {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: 2px 0;
+    position: relative;
+  }
+  .arrow-down {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+  .arrow-line {
+    width: 1.5px;
+    background: var(--border-bright);
+    height: 18px;
+  }
+  .arrow-head {
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid var(--border-bright);
+  }
+  .edge-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    background: var(--bg);
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    margin: 0 6px;
+    white-space: nowrap;
+  }
+
+  /* conditional edges */
+  .cond-edge {
+    font-family: var(--mono);
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+  .cond-normal  { color: var(--accent-teal);   border-color: rgba(74,240,208,0.4);  background: rgba(74,240,208,0.06); }
+  .cond-breach  { color: var(--accent-red);     border-color: rgba(255,107,107,0.4); background: rgba(255,107,107,0.06); }
+  .cond-warning { color: var(--accent-amber);   border-color: rgba(255,179,71,0.4);  background: rgba(255,179,71,0.06); }
+  .cond-approve { color: var(--accent-green);   border-color: rgba(61,220,132,0.4);  background: rgba(61,220,132,0.06); }
+  .cond-reject  { color: #ff8888;               border-color: rgba(255,100,100,0.4); background: rgba(255,100,100,0.06); }
+  .cond-info    { color: var(--accent-blue);    border-color: rgba(74,158,255,0.4);  background: rgba(74,158,255,0.06); }
+
+  /* fan-out / fan-in wrappers */
+  .fan {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .fan-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* horizontal divider */
+  .hdiv {
+    border: none;
+    border-top: 1px dashed var(--border);
+    margin: 12px 0;
+  }
+
+  /* loop back note */
+  .loop-note {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--accent-teal);
+    text-align: center;
+    padding: 4px 8px;
+    border: 1px dashed rgba(74,240,208,0.3);
+    border-radius: 4px;
+    display: inline-block;
+    margin: 4px auto;
+  }
+
+  /* START / END pills */
+  .pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 6px 24px;
+    border-radius: 20px;
+    display: inline-block;
+    letter-spacing: 0.08em;
+  }
+  .pill-start { background: rgba(74,158,255,0.15); border: 1.5px solid var(--accent-blue); color: var(--accent-blue); }
+  .pill-end   { background: rgba(255,107,107,0.15); border: 1.5px solid var(--accent-red);  color: var(--accent-red); }
+
+  .center { display: flex; justify-content: center; }
+
+  /* node width helpers */
+  .w160 { width: 160px; }
+  .w180 { width: 180px; }
+  .w200 { width: 200px; }
+  .w220 { width: 220px; }
+  .w260 { width: 260px; }
+  .w300 { width: 300px; }
+  .w340 { width: 340px; }
+  .w400 { width: 400px; }
+  .w480 { width: 480px; }
+  .w560 { width: 560px; }
+  .w700 { width: 700px; }
+  .wfull { width: 100%; max-width: 760px; }
+
+  .small-arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .small-arrow .arrow-line { height: 12px; }
+
+  /* conditional block */
+  .cond-block {
+    border: 1px solid rgba(155,125,255,0.3);
+    border-radius: 8px;
+    padding: 10px 10px 6px;
+    background: rgba(155,125,255,0.04);
+    position: relative;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  .cond-block-label {
+    position: absolute;
+    top: -9px; left: 14px;
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: 0.1em;
+    color: var(--accent-purple);
+    background: var(--bg);
+    padding: 0 5px;
+    text-transform: uppercase;
+  }
+
+  /* parallel block */
+  .parallel-block {
+    border: 1px solid rgba(61,220,132,0.25);
+    border-radius: 8px;
+    padding: 10px 10px 6px;
+    background: rgba(61,220,132,0.03);
+    position: relative;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  .parallel-block-label {
+    position: absolute;
+    top: -9px; left: 14px;
+    font-family: var(--mono);
+    font-size: 8px;
+    letter-spacing: 0.1em;
+    color: var(--accent-green);
+    background: var(--bg);
+    padding: 0 5px;
+    text-transform: uppercase;
+  }
+
+  .arrow-colored-blue  .arrow-line, .arrow-colored-blue  .arrow-head { background: var(--accent-blue);  border-top-color: var(--accent-blue); }
+  .arrow-colored-green .arrow-line, .arrow-colored-green .arrow-head { background: var(--accent-green); border-top-color: var(--accent-green); }
+  .arrow-colored-amber .arrow-line, .arrow-colored-amber .arrow-head { background: var(--accent-amber); border-top-color: var(--accent-amber); }
+  .arrow-colored-red   .arrow-line, .arrow-colored-red   .arrow-head { background: var(--accent-red);   border-top-color: var(--accent-red); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>AI Cargo Monitor — LangGraph Workflow</h1>
+  <p>Pharma cold chain · India → USA · Multi-agent · Human-in-the-loop</p>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#4a9eff"></div>Ingest / data</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#9b7dff"></div>Detection / decision</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#3ddc84"></div>Risk / exec</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ffb347"></div>Action / HITL</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ff6b6b"></div>End / critical</div>
+  <div class="legend-dot" style="width:28px;height:10px;background:none;border:1px dashed rgba(255,179,71,0.6);border-radius:2px"></div>
+  <span style="font-size:10px;font-family:var(--mono);color:var(--text-dim)">INTERRUPT = human-in-the-loop</span>
+</div>
+
+<div class="graph">
+
+  <!-- ══ START ══ -->
+  <div class="center" style="margin-bottom:8px">
+    <span class="pill pill-start">START</span>
+  </div>
+
+  <div class="connector center">
+    <div class="arrow-down"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+  </div>
+
+  <!-- ══ SECTION 1: DATA STREAMS ══ -->
+  <div class="section">
+    <div class="section-label">① Live data streams (all arrive in parallel)</div>
+    <div class="row">
+      <div class="node n-ingest w160">
+        <div class="node-title">GPS Stream</div>
+        <div class="node-fn"><span>stream_gps</span>()</div>
+        <div class="node-data">
+          <span class="label">emits</span>
+          <span class="field">lat, lng, timestamp</span>
+          <span class="field">speed_kmh, heading</span>
+          <span class="field">carrier_id</span>
+        </div>
+      </div>
+      <div class="node n-ingest w160">
+        <div class="node-title">Sensor Stream</div>
+        <div class="node-fn"><span>stream_sensors</span>()</div>
+        <div class="node-data">
+          <span class="label">emits</span>
+          <span class="field">temp_c, humidity_pct</span>
+          <span class="field">shock_g, door_open</span>
+          <span class="field">battery_pct</span>
+        </div>
+      </div>
+      <div class="node n-ingest w160">
+        <div class="node-title">Logistics Stream</div>
+        <div class="node-fn"><span>stream_logistics</span>()</div>
+        <div class="node-data">
+          <span class="label">emits</span>
+          <span class="field">flight_status</span>
+          <span class="field">customs_status</span>
+          <span class="field">eta_delta_hrs</span>
+        </div>
+      </div>
+      <div class="node n-ingest w160">
+        <div class="node-title">Weather Stream</div>
+        <div class="node-fn"><span>stream_weather</span>()</div>
+        <div class="node-data">
+          <span class="label">emits</span>
+          <span class="field">ambient_temp_c</span>
+          <span class="field">route_alerts</span>
+          <span class="field">airport_conditions</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector center">
+    <div class="arrow-down"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+  </div>
+
+  <!-- ══ SECTION 2: INGEST AGENT ══ -->
+  <div class="section">
+    <div class="section-label">② Ingest + normalize agent</div>
+    <div class="center">
+      <div class="node n-ingest w560">
+        <div class="node-title">Ingest Agent</div>
+        <div class="node-fn"><span>ingest_telemetry</span>(state: CargoState) → CargoState</div>
+        <div class="node-data">
+          <span class="label">reads from state</span>
+          <span class="field">raw MQTT payload from all 4 streams</span>
+          <span class="label">writes to state</span>
+          <span class="field">reading_id (UUID), ingested_at, unit_valid (bool)</span>
+          <span class="field">normalized_temp_c, alert_class: NOMINAL | WATCH | CRITICAL</span>
+          <span class="field">gps_stall_detected (bool), sensor_silence (bool)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector center">
+    <div class="arrow-down"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+  </div>
+
+  <!-- ══ SECTION 3: PARALLEL DETECTION ══ -->
+  <div class="section">
+    <div class="section-label">③ Parallel detection agents (run simultaneously)</div>
+    <div class="parallel-block">
+      <div class="parallel-block-label">send_parallel</div>
+      <div class="row">
+        <div class="node n-detect w180">
+          <div class="node-title">Anomaly Detector</div>
+          <div class="node-fn"><span>detect_anomaly</span>()</div>
+          <div class="node-data">
+            <span class="label">reads</span>
+            <span class="field">normalized_temp_c</span>
+            <span class="field">shock_g, door_open</span>
+            <span class="field">alert_class</span>
+            <span class="label">writes</span>
+            <span class="field">anomaly_type</span>
+            <span class="field">severity: LOW|HIGH|CRITICAL</span>
+            <span class="field">detected_at</span>
+          </div>
+        </div>
+        <div class="node n-detect w180">
+          <div class="node-title">Stall Detector</div>
+          <div class="node-fn"><span>detect_truck_stall</span>()</div>
+          <div class="node-data">
+            <span class="label">reads</span>
+            <span class="field">lat, lng (last 10 readings)</span>
+            <span class="field">speed_kmh</span>
+            <span class="label">writes</span>
+            <span class="field">stall_confirmed (bool)</span>
+            <span class="field">stall_duration_mins</span>
+            <span class="field">stall_location</span>
+          </div>
+        </div>
+        <div class="node n-detect w180">
+          <div class="node-title">Flight Monitor</div>
+          <div class="node-fn"><span>monitor_flight_status</span>()</div>
+          <div class="node-data">
+            <span class="label">reads</span>
+            <span class="field">flight_status</span>
+            <span class="field">eta_delta_hrs</span>
+            <span class="label">writes</span>
+            <span class="field">flight_event_type</span>
+            <span class="field">delay_hrs, cancelled (bool)</span>
+            <span class="field">next_viable_flight</span>
+          </div>
+        </div>
+        <div class="node n-detect w160">
+          <div class="node-title">Customs Monitor</div>
+          <div class="node-fn"><span>monitor_customs</span>()</div>
+          <div class="node-data">
+            <span class="label">reads</span>
+            <span class="field">customs_status</span>
+            <span class="label">writes</span>
+            <span class="field">hold_reason</span>
+            <span class="field">hold_duration_est</span>
+            <span class="field">docs_valid (bool)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector center">
+    <div class="arrow-down"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+  </div>
+
+  <!-- ══ SECTION 4: RISK SCORING ══ -->
+  <div class="section">
+    <div class="section-label">④ Risk scoring agent (RAG over FDA / GDP regulations)</div>
+    <div class="center">
+      <div class="node n-risk w560">
+        <div class="node-title">Risk Scoring Agent</div>
+        <div class="node-fn"><span>score_risk</span>(state: CargoState) → CargoState</div>
+        <div class="node-data">
+          <span class="label">reads from state</span>
+          <span class="field">anomaly_type, severity, delay_hrs, stall_confirmed, hold_reason</span>
+          <span class="field">vaccine_type, pack_time, viability_window_hrs (from shipment record)</span>
+          <span class="label">RAG query</span>
+          <span class="field">ChromaDB ← FDA cold chain docs, GDP regulations, WHO vaccine guidelines</span>
+          <span class="label">writes to state</span>
+          <span class="field">spoilage_prob (0.0–1.0), action_window_hrs (remaining time before point-of-no-return)</span>
+          <span class="field">rag_citation, risk_narrative (LLM-generated plain english explanation)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector center">
+    <div class="arrow-down"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+  </div>
+
+  <!-- ══ SECTION 5: VIABILITY CHECK ══ -->
+  <div class="section">
+    <div class="section-label">⑤ Viability budget check</div>
+    <div class="center">
+      <div class="node n-risk w480">
+        <div class="node-title">Viability Budget Check</div>
+        <div class="node-fn"><span>check_viability_budget</span>(state: CargoState) → CargoState</div>
+        <div class="node-data">
+          <span class="label">reads</span>
+          <span class="field">action_window_hrs, total_accumulated_delay_hrs</span>
+          <span class="field">spoilage_prob, route_options (alternate routes + time cost)</span>
+          <span class="label">computes</span>
+          <span class="field">delay_budget = action_window_hrs − total_accumulated_delay_hrs</span>
+          <span class="label">writes</span>
+          <span class="field">delay_budget_hrs, shipment_viable (bool)</span>
+          <span class="field">recommended_action, action_time_cost_hrs</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector center">
+    <div class="arrow-down"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+  </div>
+
+  <!-- ══ SECTION 6: ORCHESTRATOR (CONDITIONAL ROUTER) ══ -->
+  <div class="section">
+    <div class="section-label">⑥ Decision orchestrator — conditional routing node</div>
+    <div class="center">
+      <div class="node n-orch w560">
+        <div class="node-title">Decision Orchestrator</div>
+        <div class="node-fn"><span>orchestrate_decision</span>(state: CargoState) → Command</div>
+        <div class="node-data">
+          <span class="label">reads</span>
+          <span class="field">anomaly_type, shipment_viable, delay_budget_hrs, recommended_action</span>
+          <span class="field">stall_confirmed, flight_event_type, hold_reason, sensor_silence</span>
+          <span class="label">routes to one of →</span>
+          <span class="field">NORMAL → continue_monitoring</span>
+          <span class="field">TEMP_BREACH + viable → cold_storage_intervention</span>
+          <span class="field">REEFER_FAILURE → emergency_vehicle_swap</span>
+          <span class="field">TRUCK_STALL → alternate_carrier_agent</span>
+          <span class="field">FLIGHT_CANCEL → flight_rebooking_agent</span>
+          <span class="field">CUSTOMS_HOLD → compliance_escalation_agent</span>
+          <span class="field">SENSOR_SILENCE → assume_breach_agent</span>
+          <span class="field">NOT viable (delay_budget &lt; 0) → emergency_resupply_agent</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- conditional edge labels -->
+  <div class="connector center" style="margin:10px 0 8px">
+    <span class="cond-edge cond-normal">NOMINAL</span>
+    <span style="width:12px"></span>
+    <span class="cond-edge cond-breach">TEMP_BREACH</span>
+    <span style="width:12px"></span>
+    <span class="cond-edge cond-breach">REEFER_FAILURE</span>
+    <span style="width:12px"></span>
+    <span class="cond-edge cond-warning">TRUCK_STALL</span>
+    <span style="width:12px"></span>
+    <span class="cond-edge cond-warning">FLIGHT_CANCEL</span>
+    <span style="width:12px"></span>
+    <span class="cond-edge cond-info">CUSTOMS_HOLD</span>
+    <span style="width:12px"></span>
+    <span class="cond-edge cond-breach">NOT_VIABLE</span>
+  </div>
+
+  <!-- ══ SECTION 7: ACTION BRANCHES ══ -->
+  <div class="section">
+    <div class="section-label">⑦ Action agents — conditional branches</div>
+    <div class="cond-block">
+      <div class="cond-block-label">conditional_edges</div>
+      <div class="fan">
+        <!-- NORMAL -->
+        <div class="fan-col">
+          <div class="node n-loop w140" style="width:140px">
+            <div class="node-title">Continue Monitoring</div>
+            <div class="node-fn"><span>continue_monitoring</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">alert_class == NOMINAL</span>
+              <span class="label">writes</span>
+              <span class="field">loop → ingest</span>
+            </div>
+          </div>
+          <div class="loop-note">↻ loops to ①</div>
+        </div>
+        <!-- TEMP BREACH -->
+        <div class="fan-col">
+          <div class="node n-action" style="width:160px">
+            <div class="node-title">Cold Storage</div>
+            <div class="node-fn"><span>cold_storage_intervention</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">current lat/lng</span>
+              <span class="field">action_window_hrs</span>
+              <span class="label">writes</span>
+              <span class="field">cold_storage_location</span>
+              <span class="field">detour_time_hrs</span>
+              <span class="field">updated_eta</span>
+            </div>
+          </div>
+        </div>
+        <!-- REEFER FAILURE -->
+        <div class="fan-col">
+          <div class="node n-action" style="width:160px">
+            <div class="node-title">Vehicle Swap</div>
+            <div class="node-fn"><span>emergency_vehicle_swap</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">stall_location</span>
+              <span class="field">carrier_id</span>
+              <span class="label">writes</span>
+              <span class="field">new_vehicle_id</span>
+              <span class="field">transfer_eta_mins</span>
+              <span class="field">new_carrier_contact</span>
+            </div>
+          </div>
+        </div>
+        <!-- TRUCK STALL -->
+        <div class="fan-col">
+          <div class="node n-action" style="width:160px">
+            <div class="node-title">Alternate Carrier</div>
+            <div class="node-fn"><span>alternate_carrier_agent</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">stall_duration_mins</span>
+              <span class="field">flight_cutoff_hrs</span>
+              <span class="label">writes</span>
+              <span class="field">alternate_carrier</span>
+              <span class="field">pickup_eta_mins</span>
+              <span class="field">time_impact_hrs</span>
+            </div>
+          </div>
+        </div>
+        <!-- FLIGHT CANCEL -->
+        <div class="fan-col">
+          <div class="node n-action" style="width:160px">
+            <div class="node-title">Flight Rebooking</div>
+            <div class="node-fn"><span>flight_rebooking_agent</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">flight_event_type</span>
+              <span class="field">next_viable_flight</span>
+              <span class="field">action_window_hrs</span>
+              <span class="label">writes</span>
+              <span class="field">new_flight_id</span>
+              <span class="field">new_departure_time</span>
+              <span class="field">hub_storage_needed</span>
+            </div>
+          </div>
+        </div>
+        <!-- CUSTOMS HOLD -->
+        <div class="fan-col">
+          <div class="node n-action" style="width:160px">
+            <div class="node-title">Compliance Escalation</div>
+            <div class="node-fn"><span>compliance_escalation_agent</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">hold_reason</span>
+              <span class="field">docs_valid</span>
+              <span class="label">writes</span>
+              <span class="field">escalation_contact</span>
+              <span class="field">missing_docs_list</span>
+              <span class="field">broker_notified (bool)</span>
+            </div>
+          </div>
+        </div>
+        <!-- NOT VIABLE -->
+        <div class="fan-col">
+          <div class="node n-end" style="width:155px">
+            <div class="node-title">Emergency Resupply</div>
+            <div class="node-fn"><span>emergency_resupply_agent</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">shipment_viable = False</span>
+              <span class="field">destination_hospital</span>
+              <span class="label">writes</span>
+              <span class="field">nearest_who_facility</span>
+              <span class="field">resupply_eta_hrs</span>
+              <span class="field">compromised_flag = True</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- arrow down (except normal which loops) -->
+  <div class="connector center" style="margin: 8px 0 4px">
+    <div class="arrow-down"><div class="arrow-line" style="height:14px"></div><div class="arrow-head"></div></div>
+    <div class="edge-label" style="margin:0 10px">all action branches (except NORMAL) converge here</div>
+  </div>
+
+  <!-- ══ SECTION 8: HUMAN IN THE LOOP ══ -->
+  <div class="section">
+    <div class="section-label">⑧ Human-in-the-loop approval (interrupt_before)</div>
+    <div class="center">
+      <div class="node n-hitl w560">
+        <div class="node-title">Human Approval Gateway</div>
+        <div class="node-fn"><span>human_approval_gateway</span>(state: CargoState) → Command</div>
+        <div class="node-data">
+          <span class="label">LangGraph: interrupt_before = ["human_approval_gateway"]</span>
+          <span class="field">execution PAUSES here — waits for Streamlit UI button click</span>
+          <span class="label">displays to operator</span>
+          <span class="field">risk_narrative, spoilage_prob, recommended_action</span>
+          <span class="field">delay_budget_hrs, action_time_cost_hrs, updated_eta</span>
+          <span class="label">operator inputs</span>
+          <span class="field">decision: APPROVE | REJECT | MODIFY</span>
+          <span class="field">approved_by (operator ID), approved_at (timestamp)</span>
+          <span class="label">routes to →</span>
+          <span class="field">APPROVE → parallel action execution</span>
+          <span class="field">REJECT  → back to orchestrate_decision (re-evaluate)</span>
+          <span class="field">MODIFY  → back to specific action agent with updated params</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- rejection loop arrow -->
+  <div class="connector center" style="margin: 6px 0">
+    <span class="cond-edge cond-reject">REJECT → loops to ⑥ orchestrator</span>
+    <span style="width:20px"></span>
+    <span class="cond-edge cond-approve">APPROVE ↓</span>
+  </div>
+
+  <!-- ══ SECTION 9: PARALLEL EXECUTION ══ -->
+  <div class="section">
+    <div class="section-label">⑨ Parallel action execution (send_parallel on approve)</div>
+    <div class="parallel-block">
+      <div class="parallel-block-label">send_parallel</div>
+      <div class="fan">
+        <div class="fan-col">
+          <div class="node n-exec" style="width:150px">
+            <div class="node-title">Execute Reroute</div>
+            <div class="node-fn"><span>execute_reroute</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">alternate_carrier</span>
+              <span class="field">cold_storage_location</span>
+              <span class="label">writes</span>
+              <span class="field">reroute_confirmed</span>
+              <span class="field">new_route_polyline</span>
+            </div>
+          </div>
+        </div>
+        <div class="fan-col">
+          <div class="node n-exec" style="width:160px">
+            <div class="node-title">Notify Stakeholders</div>
+            <div class="node-fn"><span>notify_stakeholders</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">risk_narrative</span>
+              <span class="field">updated_eta, new_route</span>
+              <span class="label">notifies</span>
+              <span class="field">hospital ops team</span>
+              <span class="field">customs broker</span>
+              <span class="field">airline ops center</span>
+            </div>
+          </div>
+        </div>
+        <div class="fan-col">
+          <div class="node n-exec" style="width:160px">
+            <div class="node-title">Reschedule Patients</div>
+            <div class="node-fn"><span>reschedule_patients</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">destination_hospital</span>
+              <span class="field">updated_eta</span>
+              <span class="label">writes</span>
+              <span class="field">rescheduled_count</span>
+              <span class="field">notification_sent (bool)</span>
+            </div>
+          </div>
+        </div>
+        <div class="fan-col">
+          <div class="node n-exec" style="width:160px">
+            <div class="node-title">Insurance Extension</div>
+            <div class="node-fn"><span>generate_insurance_doc</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">original_insurance_days</span>
+              <span class="field">delay_days_added</span>
+              <span class="label">writes</span>
+              <span class="field">insurance_doc (PDF)</span>
+              <span class="field">new_coverage_end_date</span>
+            </div>
+          </div>
+        </div>
+        <div class="fan-col">
+          <div class="node n-exec" style="width:155px">
+            <div class="node-title">Write Audit Log</div>
+            <div class="node-fn"><span>write_audit_log</span>()</div>
+            <div class="node-data">
+              <span class="label">reads</span>
+              <span class="field">entire CargoState</span>
+              <span class="field">approved_by, approved_at</span>
+              <span class="label">writes</span>
+              <span class="field">audit_log (PDF + JSON)</span>
+              <span class="field">FDA-compliant format</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector center">
+    <div class="arrow-down"><div class="arrow-line"></div><div class="arrow-head"></div></div>
+  </div>
+
+  <!-- ══ SECTION 10: COMPLIANCE LOGGER ══ -->
+  <div class="section">
+    <div class="section-label">⑩ Compliance logger — always runs last</div>
+    <div class="center">
+      <div class="node n-log w560">
+        <div class="node-title">Compliance Logger</div>
+        <div class="node-fn"><span>compliance_logger</span>(state: CargoState) → CargoState</div>
+        <div class="node-data">
+          <span class="label">reads</span>
+          <span class="field">all executed actions, anomaly events, audit trail, approved_by, timestamps</span>
+          <span class="label">writes to TimescaleDB (audit_logs table)</span>
+          <span class="field">full state snapshot, action_type, outcome, GDP/FDA compliance flags</span>
+          <span class="label">routes to →</span>
+          <span class="field">shipment_viable = True  → loop back to ① (continue monitoring)</span>
+          <span class="field">compromised_flag = True → END (declare shipment compromised)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector center" style="margin: 6px 0">
+    <span class="cond-edge cond-normal">viable → ↻ loops to ① ingest</span>
+    <span style="width:20px"></span>
+    <span class="cond-edge cond-breach">compromised → END ↓</span>
+  </div>
+
+  <!-- ══ END ══ -->
+  <div class="center" style="margin-top:8px">
+    <span class="pill pill-end">END</span>
+  </div>
+
+  <!-- ══ STATE DICT REFERENCE ══ -->
+  <hr class="hdiv" style="margin-top:32px">
+  <div class="section-label" style="margin-bottom:12px">CargoState — full TypedDict (shared across all nodes)</div>
+  <div class="row" style="flex-wrap:wrap; justify-content:flex-start; gap:8px">
+    <div class="node n-ingest" style="width:220px">
+      <div class="node-title" style="margin-bottom:6px">Raw telemetry</div>
+      <div class="node-data">
+        <span class="field">shipment_id, reading_id</span>
+        <span class="field">timestamp, ingested_at</span>
+        <span class="field">temp_c, humidity_pct</span>
+        <span class="field">shock_g, door_open</span>
+        <span class="field">lat, lng, speed_kmh</span>
+        <span class="field">carrier_id, battery_pct</span>
+      </div>
+    </div>
+    <div class="node n-detect" style="width:220px">
+      <div class="node-title" style="margin-bottom:6px">Detection results</div>
+      <div class="node-data">
+        <span class="field">alert_class</span>
+        <span class="field">anomaly_type</span>
+        <span class="field">severity</span>
+        <span class="field">stall_confirmed</span>
+        <span class="field">stall_duration_mins</span>
+        <span class="field">sensor_silence</span>
+        <span class="field">flight_event_type</span>
+        <span class="field">hold_reason</span>
+      </div>
+    </div>
+    <div class="node n-risk" style="width:220px">
+      <div class="node-title" style="margin-bottom:6px">Risk + viability</div>
+      <div class="node-data">
+        <span class="field">spoilage_prob</span>
+        <span class="field">action_window_hrs</span>
+        <span class="field">delay_budget_hrs</span>
+        <span class="field">shipment_viable</span>
+        <span class="field">rag_citation</span>
+        <span class="field">risk_narrative</span>
+        <span class="field">recommended_action</span>
+      </div>
+    </div>
+    <div class="node n-action" style="width:220px">
+      <div class="node-title" style="margin-bottom:6px">Decision + approval</div>
+      <div class="node-data">
+        <span class="field">cascade_triggered</span>
+        <span class="field">approved_by</span>
+        <span class="field">approved_at</span>
+        <span class="field">actions_dispatched[]</span>
+        <span class="field">new_route_polyline</span>
+        <span class="field">updated_eta</span>
+        <span class="field">new_flight_id</span>
+      </div>
+    </div>
+    <div class="node n-exec" style="width:220px">
+      <div class="node-title" style="margin-bottom:6px">Outputs</div>
+      <div class="node-data">
+        <span class="field">audit_log_id</span>
+        <span class="field">insurance_doc_url</span>
+        <span class="field">rescheduled_count</span>
+        <span class="field">compromised_flag</span>
+        <span class="field">notifications_sent[]</span>
+        <span class="field">compliance_flags[]</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

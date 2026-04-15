@@ -1,0 +1,104 @@
+
+<style>
+#erd svg { width: 100%; }
+</style>
+<div id="erd" style="padding: 8px 0"></div>
+<script type="module">
+import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+await document.fonts.ready;
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'base',
+  fontFamily: '"Anthropic Sans", sans-serif',
+  themeVariables: {
+    darkMode: dark,
+    fontSize: '13px',
+    fontFamily: '"Anthropic Sans", sans-serif',
+    lineColor: dark ? '#9c9a92' : '#73726c',
+    textColor: dark ? '#c2c0b6' : '#3d3d3a',
+  },
+});
+const { svg } = await mermaid.render('erd-svg', `erDiagram
+  SHIPMENTS ||--o{ TELEMETRY : "generates"
+  SHIPMENTS ||--o{ ANOMALY_EVENTS : "flags"
+  ANOMALY_EVENTS ||--|| RISK_ASSESSMENTS : "triggers"
+  RISK_ASSESSMENTS ||--|| AGENT_DECISIONS : "informs"
+  AGENT_DECISIONS ||--o{ AUDIT_LOGS : "creates"
+
+  SHIPMENTS {
+    string id PK
+    string cargo_type
+    string origin_airport
+    string dest_airport
+    string carrier
+    string status
+    timestamp created_at
+  }
+  TELEMETRY {
+    string id PK
+    string shipment_id FK
+    float temp_c
+    float humidity_pct
+    float shock_g
+    float lat
+    float lng
+    string customs_status
+    timestamp recorded_at
+  }
+  ANOMALY_EVENTS {
+    string id PK
+    string shipment_id FK
+    string reading_id FK
+    string anomaly_type
+    string severity
+    timestamp detected_at
+  }
+  RISK_ASSESSMENTS {
+    string id PK
+    string anomaly_id FK
+    float spoilage_prob
+    int action_window_hrs
+    string rag_source
+    timestamp assessed_at
+  }
+  AGENT_DECISIONS {
+    string id PK
+    string risk_id FK
+    boolean cascade_triggered
+    json action_plan
+    string approved_by
+    timestamp approved_at
+  }
+  AUDIT_LOGS {
+    string id PK
+    string decision_id FK
+    string action_type
+    string outcome
+    timestamp created_at
+  }
+`);
+document.getElementById('erd').innerHTML = svg;
+document.querySelectorAll('#erd svg .node').forEach(node => {
+  const firstPath = node.querySelector('path[d]');
+  if (!firstPath) return;
+  const d = firstPath.getAttribute('d');
+  const nums = d.match(/-?[\d.]+/g)?.map(Number);
+  if (!nums || nums.length < 8) return;
+  const xs = [nums[0], nums[2], nums[4], nums[6]];
+  const ys = [nums[1], nums[3], nums[5], nums[7]];
+  const x = Math.min(...xs), y = Math.min(...ys);
+  const w = Math.max(...xs) - x, h = Math.max(...ys) - y;
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', x); rect.setAttribute('y', y);
+  rect.setAttribute('width', w); rect.setAttribute('height', h);
+  rect.setAttribute('rx', '8');
+  for (const a of ['fill', 'stroke', 'stroke-width', 'class', 'style']) {
+    if (firstPath.hasAttribute(a)) rect.setAttribute(a, firstPath.getAttribute(a));
+  }
+  firstPath.replaceWith(rect);
+});
+document.querySelectorAll('#erd svg .row-rect-odd path, #erd svg .row-rect-even path').forEach(p => {
+  p.setAttribute('stroke', 'none');
+});
+</script>

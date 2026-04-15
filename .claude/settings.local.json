@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ':*)",
+      "Bash(python -c \"import cargo_monitor_workflow; print\\('Import OK'\\)\")",
+      "Bash(python dashboard.py --no-browser)",
+      "Bash(echo \"Server PID: $!\")",
+      "Bash(curl -s http://localhost:8050/api/shipments)",
+      "Bash(python -c \"import json,sys; ships=json.load\\(sys.stdin\\); print\\(f'Loaded {len\\(ships\\)} shipments'\\); [print\\(f'  {s[\\\\\"shipment_id\\\\\"]} - {s.get\\(\\\\\"vaccine_type\\\\\",\\\\\"?\\\\\"\\)}'\\) for s in ships[:10]]\")",
+      "Bash(python -)",
+      "Bash(python -c \"from cargo_monitor_workflow import build_cargo_monitor_graph, ai_fallback_agent; print\\('Import OK'\\); g=build_cargo_monitor_graph\\(mode='stream'\\).compile\\(\\); print\\('Graph compiled OK'\\)\")",
+      "Bash(python -c \"import anthropic; print\\('anthropic version:', anthropic.__version__\\)\")",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(python -c \"import json,sys;d=json.load\\(sys.stdin\\);print\\(f'Server up — {len\\(d\\)} shipments'\\)\")",
+      "Bash(netstat -ano)",
+      "Bash(cmd:*)",
+      "Bash(wmic process:*)",
+      "Bash(python -c \"import json,sys;d=json.load\\(sys.stdin\\);print\\(f'Server up with {len\\(d\\)} shipments'\\)\")",
+      "Bash(python generate_data.py)",
+      "Bash(python -c \"import json,sys;d=json.load\\(sys.stdin\\);print\\(f'Server up, {len\\(d\\)} shipments'\\)\")",
+      "Bash(python -c \"import langgraph, langchain_core, anthropic; print\\('deps ok'\\)\")",
+      "Bash(python demo_runner.py --scenario earthquake_disruption)"
+    ]
+  }
+}

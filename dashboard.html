@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Cargo Monitor</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg-0:#0a0c10;--bg-1:#0f1117;--bg-2:#1a1d29;--bg-3:#262a36;
+  --accent:#6366f1;--accent-h:#818cf8;--success:#10b981;--warn:#f59e0b;--danger:#ef4444;--orange:#f97316;
+  --t0:#f8fafc;--t1:#e2e8f0;--t2:#94a3b8;--t3:#64748b;--border:#2d3348;--r:8px;
+}
+html,body{height:100%;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg-0);color:var(--t1);overflow:hidden}
+.app{display:flex;height:100%}
+
+/* LEFT SIDEBAR */
+.sidebar{width:275px;min-width:275px;background:var(--bg-1);border-right:1px solid var(--border);display:flex;flex-direction:column}
+.sidebar-header{padding:16px;border-bottom:1px solid var(--border)}
+.sidebar-header h1{font-size:15px;color:var(--t0);font-weight:700}
+.sidebar-header .sub{font-size:10px;color:var(--t3);margin-top:3px;text-transform:uppercase;letter-spacing:1px}
+.ship-list{flex:1;overflow-y:auto;padding:6px}
+.ship-list::-webkit-scrollbar{width:4px}.ship-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.ship-card{padding:11px 13px;margin-bottom:4px;border-radius:var(--r);cursor:pointer;border:1px solid transparent;transition:all .2s}
+.ship-card:hover{background:var(--bg-2);border-color:var(--border)}.ship-card.active{background:var(--bg-3);border-color:var(--accent)}
+.sc-top{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--t0)}
+.sc-route{font-size:10px;color:var(--t3);margin-top:2px}
+.sc-bottom{display:flex;justify-content:space-between;align-items:center;margin-top:5px}
+.sc-vaccine{font-size:10px;color:var(--t2)}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+.dot.green{background:var(--success)}.dot.yellow{background:var(--warn)}.dot.red{background:var(--danger)}.dot.gray{background:var(--t3)}
+.badge{font-size:9px;padding:2px 7px;border-radius:10px;font-weight:600;text-transform:uppercase}
+.badge.nominal{background:rgba(16,185,129,.15);color:var(--success)}.badge.watch{background:rgba(245,158,11,.15);color:var(--warn)}.badge.critical{background:rgba(239,68,68,.15);color:var(--danger)}.badge.ready{background:rgba(99,102,241,.15);color:var(--accent)}
+
+/* CENTER */
+.center{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:50px;min-height:50px;background:var(--bg-1);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 14px;gap:12px}
+.tb-info{min-width:0;flex-shrink:1}
+.tb-info h2{font-size:13px;color:var(--t0);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tb-route-text{font-size:10px;color:var(--t3)}
+.progress-bar{height:3px;background:var(--bg-3);border-radius:2px;overflow:hidden;margin-top:3px}.progress-bar .fill{height:100%;background:var(--accent);transition:width .4s;border-radius:2px}
+.controls{display:flex;align-items:center;gap:5px;margin-left:auto;flex-shrink:0}
+.btn{padding:5px 11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-2);color:var(--t1);font-size:11px;cursor:pointer;transition:all .15s;font-family:inherit;white-space:nowrap}
+.btn:hover{background:var(--bg-3);border-color:var(--t3)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}.btn.primary:hover{background:var(--accent-h)}
+.btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+.btn.success{background:var(--success);border-color:var(--success);color:#fff}
+.btn.warn{background:var(--warn);border-color:var(--warn);color:#000}
+select.speed{background:var(--bg-2);color:var(--t1);border:1px solid var(--border);padding:4px 6px;border-radius:4px;font-size:10px;font-family:inherit}
+.center-content{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#map{flex:1;min-height:0;background:var(--bg-0)}
+.chart-section{height:185px;min-height:185px;padding:8px 14px;border-top:1px solid var(--border);background:var(--bg-1)}
+.ch-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.ch-head h3{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:1px}
+.ch-leg{font-size:11px;color:var(--accent);font-weight:600}
+.chart-wrap{height:calc(100% - 20px)}
+
+/* RIGHT PANEL */
+.right-panel{width:370px;min-width:370px;background:var(--bg-1);border-left:1px solid var(--border);display:flex;flex-direction:column}
+.rp-header{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.rp-header h3{font-size:12px;color:var(--t0);font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+.rp-count{font-size:10px;color:var(--t3)}
+
+/* ETA PANEL */
+.eta-panel{display:flex;border-bottom:1px solid var(--border);background:var(--bg-2)}
+.eta-panel.hidden{display:none}
+.eta-item{flex:1;text-align:center;padding:10px 6px;border-right:1px solid var(--border)}
+.eta-item:last-child{border-right:none}
+.eta-val{font-size:18px;font-weight:700;color:var(--t0);font-variant-numeric:tabular-nums;line-height:1.1}
+.eta-sub{font-size:9px;color:var(--t3);margin-top:1px}
+.eta-delta{font-size:10px;font-weight:600;margin-top:2px}
+.eta-val.red{color:var(--danger)}.eta-val.green{color:var(--success)}.eta-val.yellow{color:var(--warn)}.eta-val.accent{color:var(--accent)}
+
+.rp-body{flex:1;overflow-y:auto;padding:8px}
+.rp-body::-webkit-scrollbar{width:4px}.rp-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.rp-actions{padding:10px 14px;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px}
+.rp-actions:empty{display:none;padding:0}
+
+.feed-item{padding:10px 12px;margin-bottom:6px;border-radius:var(--r);font-size:12px;border-left:3px solid var(--border);background:var(--bg-2);animation:slideIn .25s ease}
+.feed-item.info{border-left-color:var(--accent)}.feed-item.success{border-left-color:var(--success)}.feed-item.warning{border-left-color:var(--warn)}.feed-item.danger{border-left-color:var(--danger);background:rgba(239,68,68,.06)}
+.fi-head{display:flex;justify-content:space-between;margin-bottom:3px}
+.fi-type{font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.3px}
+.fi-type.c-danger{color:var(--danger)}.fi-type.c-warn{color:var(--warn)}.fi-type.c-success{color:var(--success)}.fi-type.c-accent{color:var(--accent)}
+.fi-time{font-size:10px;color:var(--t3)}
+.fi-msg{color:var(--t2);line-height:1.5}
+.fi-btns{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+@keyframes slideIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+.empty-state{display:flex;align-items:center;justify-content:center;flex-direction:column;color:var(--t3);gap:10px;padding:40px 20px;height:100%}
+.empty-state .icon{font-size:36px;opacity:.25}
+.empty-state p{font-size:12px;text-align:center;line-height:1.6}
+
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:1000;opacity:0;pointer-events:none;transition:opacity .3s}
+.modal-overlay.show{opacity:1;pointer-events:auto}
+.modal{background:var(--bg-1);border:1px solid var(--border);border-radius:12px;padding:24px;width:520px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.modal h2{font-size:17px;color:var(--t0);margin-bottom:4px}
+.modal .modal-sub{font-size:11px;color:var(--t3);margin-bottom:16px}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px}
+.detail-item{background:var(--bg-2);padding:10px;border-radius:var(--r)}
+.detail-item .dl{font-size:9px;color:var(--t3);text-transform:uppercase;margin-bottom:3px}
+.detail-item .dv{font-size:16px;font-weight:700;color:var(--t0)}.detail-item .dv.red{color:var(--danger)}.detail-item .dv.green{color:var(--success)}.detail-item .dv.yellow{color:var(--warn)}
+.narrative{background:var(--bg-2);padding:12px;border-radius:var(--r);font-size:11px;color:var(--t2);line-height:1.6;margin-bottom:16px;border-left:3px solid var(--warn)}
+.modal-btns{display:flex;gap:10px;justify-content:flex-end}
+
+/* LEAFLET */
+.leaflet-container{background:var(--bg-0)!important}
+.vehicle-icon{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;font-size:16px;line-height:1}
+.vehicle-icon.truck{background:var(--accent);box-shadow:0 0 10px rgba(99,102,241,.5)}
+.vehicle-icon.flight{background:#a78bfa;box-shadow:0 0 10px rgba(167,139,250,.5)}
+.vehicle-icon.airport{background:var(--t3);box-shadow:0 0 10px rgba(100,116,139,.5)}
+.vehicle-icon.danger{background:var(--danger)!important;box-shadow:0 0 12px rgba(239,68,68,.6)!important}
+.waypoint-label{background:none!important;border:none!important;font-size:10px;color:var(--t2);font-weight:600;white-space:nowrap}
+.cs-icon{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;font-size:14px;background:var(--orange);box-shadow:0 0 10px rgba(249,115,22,.5)}
+
+/* ACTION CARDS */
+.ac-panel-header{font-size:9px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;padding:6px 2px 6px;width:100%;border-top:1px solid var(--border);margin-top:2px}
+.action-cards{width:100%;display:flex;flex-direction:column;gap:4px}
+.action-card{padding:9px 10px;border-radius:var(--r);border:1px solid var(--border);background:var(--bg-2);display:flex;align-items:flex-start;gap:9px;transition:border-color .15s,opacity .2s}
+.action-card.ac-primary{border-color:rgba(99,102,241,.45);background:rgba(99,102,241,.07)}
+.action-card.ac-done{border-color:rgba(16,185,129,.35);background:rgba(16,185,129,.05)}
+.action-card.ac-skipped{opacity:.38}
+.ac-check{margin-top:3px;width:14px;height:14px;accent-color:var(--accent);cursor:pointer;flex-shrink:0}
+.ac-icon{font-size:16px;flex-shrink:0;line-height:1.35;margin-top:1px}
+.ac-info{flex:1;min-width:0}
+.ac-title{font-size:11px;font-weight:600;color:var(--t0);line-height:1.4;display:flex;align-items:center;gap:5px}
+.ac-badge{font-size:8px;padding:1px 5px;border-radius:4px;background:rgba(99,102,241,.2);color:var(--accent-h);font-weight:700;text-transform:uppercase;flex-shrink:0}
+.ac-badge.done{background:rgba(16,185,129,.2);color:var(--success)}
+.ac-badge.skipped{background:rgba(100,116,139,.2);color:var(--t3)}
+.ac-desc{font-size:10px;color:var(--t3);margin-top:2px;line-height:1.45}
+.ac-exec-row{display:flex;gap:6px;width:100%;margin-top:8px;padding-top:6px;border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-header"><h1>&#128666; AI Cargo Monitor</h1><div class="sub">Cold-Chain &bull; India &rarr; USA</div></div>
+    <div class="ship-list" id="ship-list"></div>
+  </aside>
+  <div class="center">
+    <div class="topbar">
+      <div class="tb-info" id="tb-info"><h2>Select a shipment to begin</h2><div class="tb-route-text">Click any card on the left</div></div>
+      <div class="controls" id="controls" style="display:none">
+        <button class="btn primary" id="btn-play" onclick="togglePlay()">&#9654; Play</button>
+        <button class="btn" onclick="stepForward()">Step</button>
+        <select class="speed" onchange="setSpeed(this.value)"><option value="800">0.5x</option><option value="400" selected>1x</option><option value="200">2x</option><option value="80">5x</option><option value="30">10x</option></select>
+        <button class="btn" onclick="resetPlayback()">&#8634;</button>
+      </div>
+    </div>
+    <div class="center-content">
+      <div id="map"></div>
+      <div class="chart-section">
+        <div class="ch-head"><h3>Temperature (&deg;C)</h3><span class="ch-leg" id="ch-leg"></span></div>
+        <div class="chart-wrap"><canvas id="temp-chart"></canvas></div>
+      </div>
+    </div>
+  </div>
+  <div class="right-panel">
+    <div class="rp-header"><h3>&#128225; Agent Feed</h3><span class="rp-count" id="rp-count">0 events</span></div>
+    <div class="eta-panel hidden" id="eta-panel">
+      <div class="eta-item"><div class="eta-val accent" id="ev-eta">--</div><div class="eta-sub">ETA to Dest</div><div class="eta-delta" id="ed-eta"></div></div>
+      <div class="eta-item"><div class="eta-val" id="ev-elapsed">--</div><div class="eta-sub">Elapsed</div><div class="eta-delta" id="ed-elapsed"></div></div>
+      <div class="eta-item"><div class="eta-val green" id="ev-buffer">--</div><div class="eta-sub">Buffer</div><div class="eta-delta" id="ed-buffer"></div></div>
+    </div>
+    <div class="rp-body" id="rp-body"><div class="empty-state"><div class="icon">&#128225;</div><p>Agent notifications appear here<br>as readings are processed</p></div></div>
+    <div class="rp-actions" id="rp-actions"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <h2>&#9888;&#65039; Action Required</h2>
+    <div class="modal-sub" id="modal-sub"></div>
+    <div class="detail-grid" id="modal-grid"></div>
+    <div class="narrative" id="modal-narrative"></div>
+    <div id="modal-ai-block" style="display:none;margin-top:12px;padding:10px 12px;background:rgba(99,102,241,0.12);border-left:3px solid #818cf8;border-radius:6px;font-size:12px;line-height:1.6;">
+      <div style="font-weight:700;color:#a5b4fc;margin-bottom:4px;">&#129302; AI Fallback Analysis</div>
+      <div id="modal-ai-diagnosis" style="color:#e2e8f0;margin-bottom:4px;"></div>
+      <div id="modal-ai-reasoning" style="color:#94a3b8;font-style:italic;"></div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn" onclick="rejectAction()">&#10060; Reject</button>
+      <button class="btn success" onclick="approveAction()">&#9989; Approve Action</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════ STATE ═══════ */
+// inFlight: prevents concurrent API calls — the root cause of the 2.5x journey loop.
+// No setInterval is used. Readings chain via setTimeout inside handleState only.
+let shipments=[],telemetry=[],selected=null,idx=0,playing=false,speed=400,lastState={},feedCount=0,inFlight=false;
+let wallStart=null,wallTimer=null;
+let map,routeLayer,posMarker,anomalyMarkers=[],rerouteLine=null,rerouteDestLine=null,csMarker=null;
+
+// Per-profile route definitions: waypoints + segment modes
+const ROUTE_PROFILES_MAP = {
+  'international_bom_jfk': {
+    waypoints:[
+      {name:'Mumbai',       lat:19.076, lng:72.878},
+      {name:'BOM Airport',  lat:19.090, lng:72.866},
+      {name:'DXB Hub',      lat:25.253, lng:55.366},
+      {name:'JFK Airport',  lat:40.641, lng:-73.778},
+      {name:'Hospital',     lat:40.713, lng:-74.006},
+    ],
+    segments:[
+      {from:0,to:1,mode:'truck'},
+      {from:1,to:2,mode:'flight'},
+      {from:2,to:3,mode:'flight'},
+      {from:3,to:4,mode:'truck'},
+    ]
+  },
+  'domestic_mum_ahm': {
+    waypoints:[
+      {name:'Mumbai',       lat:19.076, lng:72.878},
+      {name:'Ahmedabad',    lat:23.023, lng:72.571},
+      {name:'Hospital',     lat:23.030, lng:72.560},
+    ],
+    segments:[
+      {from:0,to:1,mode:'truck'},
+      {from:1,to:2,mode:'truck'},
+    ]
+  },
+  'regional_mum_del': {
+    waypoints:[
+      {name:'Mumbai',       lat:19.076, lng:72.878},
+      {name:'BOM Airport',  lat:19.090, lng:72.866},
+      {name:'DEL Airport',  lat:28.556, lng:77.100},
+      {name:'Delhi Hosp.',  lat:28.614, lng:77.209},
+    ],
+    segments:[
+      {from:0,to:1,mode:'truck'},
+      {from:1,to:2,mode:'flight'},
+      {from:2,to:3,mode:'truck'},
+    ]
+  }
+};
+
+function getRouteProfile(){
+  const key = selected?.route_profile || 'international_bom_jfk';
+  return ROUTE_PROFILES_MAP[key] || ROUTE_PROFILES_MAP['international_bom_jfk'];
+}
+
+let chart;
+
+function fmtHrs(h){if(h==null||isNaN(h))return'--';if(h>=48)return Math.floor(h/24)+'d '+Math.round(h%24)+'h';if(h>=1)return h.toFixed(1)+'h';return Math.round(h*60)+'m';}
+
+/* ═══════ INIT ═══════ */
+async function init(){shipments=await fetch('/api/shipments').then(r=>r.json());renderSidebar();initMap();initChart();}
+
+/* ═══════ SIDEBAR ═══════ */
+function renderSidebar(){
+  document.getElementById('ship-list').innerHTML=shipments.map(s=>`
+    <div class="ship-card" id="card-${s.shipment_id}" onclick="selectShipment('${s.shipment_id}')">
+      <div class="sc-top"><span class="dot gray"></span>${s.shipment_id}</div>
+      <div class="sc-route">${s.route_label||s.origin_airport+' \u2192 '+s.dest_airport} &rarr; ${(s.destination_hospital||'').substring(0,18)||'Hospital'}</div>
+      <div class="sc-bottom"><span class="sc-vaccine">${s.vaccine_type.replace(/_/g,' ')}</span><span class="badge ready">Ready</span></div>
+    </div>`).join('');
+}
+function updateCard(sid,alert){
+  const c=document.getElementById('card-'+sid);if(!c)return;
+  const isDelivered=alert==='DELIVERED';
+  c.querySelector('.dot').className='dot '+(alert==='CRITICAL'?'red':alert==='WATCH'?'yellow':isDelivered?'green':'green');
+  const b=c.querySelector('.badge');
+  b.className='badge '+(alert==='CRITICAL'?'critical':alert==='WATCH'?'watch':isDelivered?'nominal':'nominal');
+  b.textContent=isDelivered?'Delivered':alert;
+}
+
+/* ═══════ SELECT ═══════ */
+async function selectShipment(sid){
+  if(playing)_stopPlay();stopWall();
+  document.querySelectorAll('.ship-card').forEach(c=>c.classList.remove('active'));
+  document.getElementById('card-'+sid).classList.add('active');
+  selected=shipments.find(s=>s.shipment_id===sid);
+  telemetry=await fetch('/api/telemetry/'+sid).then(r=>r.json());
+  idx=0;feedCount=0;lastState={};wallStart=null;threadId=null;journeyStarted=false;inFlight=false;
+  anomalyMarkers.forEach(m=>map.removeLayer(m));anomalyMarkers=[];
+  clearReroute();
+  document.getElementById('controls').style.display='flex';
+  document.getElementById('eta-panel').classList.remove('hidden');
+  updateTopbar();clearFeed();resetChart();drawRoute();updateETA(null);
+  addFeed('info','Tracking Started',`${telemetry.length} readings loaded. Press <b>Play</b> or <b>Step</b>.`);
+}
+
+/* ═══════ TOPBAR ═══════ */
+function updateTopbar(){
+  const el=document.getElementById('tb-info');if(!selected)return;
+  const pct=telemetry.length?Math.round(idx/telemetry.length*100):0;
+  el.innerHTML=`<h2>${selected.shipment_id} &mdash; ${selected.vaccine_type.replace(/_/g,' ')}</h2>
+    <div class="tb-route-text">${selected.route_label||selected.origin_airport+' \u2192 '+selected.dest_airport} &rarr; ${selected.destination_hospital||'Hospital'}</div>
+    <div class="progress-bar"><div class="fill" style="width:${pct}%"></div></div>`;
+}
+
+/* ═══════ ETA PANEL ═══════ */
+function updateETA(st){
+  if(!st){
+    document.getElementById('ev-eta').textContent='--';document.getElementById('ev-elapsed').textContent='0h';document.getElementById('ev-buffer').textContent='--';
+    document.getElementById('ed-eta').textContent='';document.getElementById('ed-elapsed').textContent='';document.getElementById('ed-buffer').textContent='';
+    return;
+  }
+  const eta=st.eta_destination_hrs||0, elapsed=st.elapsed_hrs||0, buffer=st.buffer_hrs||st.delay_budget_hrs||0, delay=st.delay_added_hrs||0;
+  document.getElementById('ev-eta').textContent=fmtHrs(eta);
+  document.getElementById('ev-eta').className='eta-val'+(eta>24?' accent':eta>8?'':' yellow');
+  document.getElementById('ev-elapsed').textContent=fmtHrs(elapsed);
+  if(wallStart){const s=Math.floor((Date.now()-wallStart)/1000);document.getElementById('ed-elapsed').textContent='wall '+Math.floor(s/60)+':'+String(s%60).padStart(2,'0');document.getElementById('ed-elapsed').style.color='var(--t3)';}
+  document.getElementById('ev-buffer').textContent=fmtHrs(buffer);
+  document.getElementById('ev-buffer').className='eta-val'+(buffer>20?' green':buffer>5?' yellow':' red');
+  if(delay>0){
+    document.getElementById('ed-eta').innerHTML='<span style="color:var(--danger)">+'+fmtHrs(delay)+' delay</span>';
+    document.getElementById('ed-buffer').innerHTML='<span style="color:var(--danger)">-'+fmtHrs(delay)+'</span>';
+  } else {document.getElementById('ed-eta').textContent='';document.getElementById('ed-buffer').textContent='';}
+}
+function startWall(){if(!wallStart)wallStart=Date.now();wallTimer=setInterval(()=>updateETA(lastState),1000);}
+function stopWall(){clearInterval(wallTimer);wallTimer=null;wallStart=null;}
+
+/* ═══════ MAP ═══════ */
+function initMap(){
+  map=L.map('map',{center:[25,20],zoom:3,zoomControl:false,attributionControl:false});
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:18}).addTo(map);
+  L.control.zoom({position:'bottomright'}).addTo(map);
+  routeLayer=L.layerGroup().addTo(map);
+}
+function drawRoute(){
+  routeLayer.clearLayers();if(posMarker){map.removeLayer(posMarker);posMarker=null;}
+  const profile = getRouteProfile();
+  const wps = profile.waypoints;
+  const pts = wps.map(w=>[w.lat,w.lng]);
+  // Draw each segment with mode-appropriate style
+  profile.segments.forEach(seg=>{
+    const isFlight = seg.mode==='flight';
+    L.polyline([pts[seg.from],pts[seg.to]],{
+      color: isFlight?'#a78bfa':'#6366f1',
+      weight: isFlight?2:2.5,
+      dashArray: isFlight?'8 6':null,
+      opacity: isFlight?.5:.7
+    }).addTo(routeLayer);
+  });
+  // Waypoint markers + labels
+  wps.forEach(w=>{
+    L.circleMarker([w.lat,w.lng],{radius:5,color:'#6366f1',fillColor:'#6366f1',fillOpacity:.9,weight:1}).addTo(routeLayer);
+    L.marker([w.lat,w.lng],{icon:L.divIcon({className:'waypoint-label',html:w.name,iconAnchor:[-10,-6]})}).addTo(routeLayer);
+  });
+  posMarker=L.marker(pts[0],{icon:vehicleIcon('truck',0,false)}).addTo(map);
+  map.fitBounds(L.latLngBounds(pts).pad(.15));
+}
+function vehicleIcon(mode,heading,danger){
+  const emoji=mode==='truck'?'&#128667;':mode==='flight'?'&#9992;&#65039;':'&#128230;';
+  const cls=danger?'danger':(mode==='truck'?'truck':mode==='flight'?'flight':'airport');
+  const rot=mode==='flight'?'transform:rotate('+(heading||0)+'deg);':'';
+  return L.divIcon({className:'',html:'<div class="vehicle-icon '+cls+'" style="'+rot+'">'+emoji+'</div>',iconSize:[32,32],iconAnchor:[16,16]});
+}
+function moveVehicle(lat,lng,mode,heading,danger){
+  if(!posMarker)return;posMarker.setLatLng([lat,lng]);posMarker.setIcon(vehicleIcon(mode,heading,danger));
+}
+function pinAnomaly(lat,lng,label){anomalyMarkers.push(L.circleMarker([lat,lng],{radius:9,color:'#ef4444',fillColor:'#ef4444',fillOpacity:.2,weight:2}).bindPopup(label).addTo(map));}
+function drawReroutePath(st){
+  clearReroute();
+  const curLat=st.lat||0, curLng=st.lng||0;
+  const hasStop=st.cold_storage_lat&&st.cold_storage_lng;
+  const stopLat=st.cold_storage_lat, stopLng=st.cold_storage_lng;
+  const stopLabel=st.cold_storage_location||'Reroute Stop';
+  const wps=getRouteProfile().waypoints;
+  const dest=wps[wps.length-1];
+
+  if(hasStop){
+    // current → reroute stop (orange solid — confirmed new leg)
+    rerouteLine=L.polyline([[curLat,curLng],[stopLat,stopLng]],
+      {color:'#f97316',weight:3,opacity:.9}).addTo(map);
+    // reroute stop → final destination (orange dashed — onward path)
+    rerouteDestLine=L.polyline([[stopLat,stopLng],[dest.lat,dest.lng]],
+      {color:'#f97316',weight:2,dashArray:'6 5',opacity:.65}).addTo(map);
+    // stop marker
+    csMarker=L.marker([stopLat,stopLng],{icon:L.divIcon({
+      className:'',html:'<div class="cs-icon">&#10052;&#65039;</div>',iconSize:[28,28],iconAnchor:[14,14]
+    })}).bindPopup(stopLabel).addTo(map);
+    // fit map to show full new path
+    map.fitBounds(L.latLngBounds([[curLat,curLng],[stopLat,stopLng],[dest.lat,dest.lng]]).pad(.2));
+  } else {
+    // No specific stop (e.g. flight rebook, carrier swap) — draw direct orange line to destination
+    rerouteLine=L.polyline([[curLat,curLng],[dest.lat,dest.lng]],
+      {color:'#f97316',weight:2.5,dashArray:'8 5',opacity:.8}).addTo(map);
+    map.fitBounds(L.latLngBounds([[curLat,curLng],[dest.lat,dest.lng]]).pad(.2));
+  }
+}
+function clearReroute(){
+  if(rerouteLine){map.removeLayer(rerouteLine);rerouteLine=null;}
+  if(rerouteDestLine){map.removeLayer(rerouteDestLine);rerouteDestLine=null;}
+  if(csMarker){map.removeLayer(csMarker);csMarker=null;}
+}
+
+/* ═══════ CHART ═══════ */
+function initChart(){
+  chart=new Chart(document.getElementById('temp-chart').getContext('2d'),{type:'line',data:{labels:[],datasets:[
+    {label:'Max',data:[],borderColor:'rgba(16,185,129,.35)',borderDash:[4,4],pointRadius:0,fill:false,borderWidth:1,order:2},
+    {label:'Min',data:[],borderColor:'rgba(16,185,129,.35)',borderDash:[4,4],pointRadius:0,backgroundColor:'rgba(16,185,129,.05)',fill:'-1',borderWidth:1,order:3},
+    {label:'Temp',data:[],borderColor:'#6366f1',pointRadius:2,pointBackgroundColor:[],fill:false,borderWidth:2,tension:.3,order:1}
+  ]},options:{responsive:true,maintainAspectRatio:false,animation:{duration:150},scales:{x:{ticks:{color:'#64748b',font:{size:9},maxTicksLimit:14},grid:{color:'rgba(45,51,72,.3)'}},y:{ticks:{color:'#64748b',font:{size:9}},grid:{color:'rgba(45,51,72,.3)'},suggestedMin:-2,suggestedMax:14}},plugins:{legend:{display:false}}}});
+}
+function resetChart(){chart.data.labels=[];chart.data.datasets.forEach(d=>d.data=[]);chart.data.datasets[2].pointBackgroundColor=[];chart.update('none');}
+function addPoint(lbl,temp,mn,mx){
+  chart.data.labels.push(lbl);chart.data.datasets[0].data.push(mx);chart.data.datasets[1].data.push(mn);chart.data.datasets[2].data.push(temp);
+  chart.data.datasets[2].pointBackgroundColor.push((temp>mx||temp<mn)?'#ef4444':'#6366f1');
+  if(chart.data.labels.length>80){chart.data.labels.shift();chart.data.datasets.forEach(d=>d.data.shift());chart.data.datasets[2].pointBackgroundColor.shift();}chart.update('none');
+}
+
+/* ═══════ FEED ═══════ */
+function clearFeed(){document.getElementById('rp-body').innerHTML='';document.getElementById('rp-actions').innerHTML='';feedCount=0;document.getElementById('rp-count').textContent='0 events';}
+function addFeed(type,title,msg,btns){
+  const el=document.getElementById('rp-body');
+  const tc={danger:'c-danger',warning:'c-warn',success:'c-success',info:'c-accent'}[type]||'';
+  let h=`<div class="fi-head"><span class="fi-type ${tc}">${title}</span><span class="fi-time">${new Date().toLocaleTimeString()}</span></div><div class="fi-msg">${msg}</div>`;
+  if(btns)h+=`<div class="fi-btns">${btns.map(b=>`<button class="btn ${b.c||''}" onclick="${b.fn}">${b.l}</button>`).join('')}</div>`;
+  const d=document.createElement('div');d.className='feed-item '+type;d.innerHTML=h;el.prepend(d);
+  feedCount++;document.getElementById('rp-count').textContent=feedCount+' events';
+}
+function setActions(btns){document.getElementById('rp-actions').innerHTML=btns.map(b=>`<button class="btn ${b.c||''}" onclick="${b.fn}">${b.l}</button>`).join('');}
+
+/* ═══════ ANOMALY MESSAGE HELPERS ═══════ */
+const ANOMALY_TITLES={
+  'TEMP_BREACH':'Temperature Excursion','REEFER_FAILURE':'Refrigeration Failure',
+  'TRUCK_STALL':'Vehicle Stalled','FLIGHT_CANCEL':'Flight Cancelled',
+  'CUSTOMS_HOLD':'Customs Hold','SENSOR_SILENCE':'Sensor Offline',
+  'DOOR_BREACH':'Container Breach','NOT_VIABLE':'Shipment Non-Viable',
+  'UNKNOWN':'⚠️ AI-Diagnosed Anomaly'
+};
+const TEMP_ANOMALIES=new Set(['TEMP_BREACH','REEFER_FAILURE','SENSOR_SILENCE','DOOR_BREACH']);
+
+function anomalyTitle(type){return ANOMALY_TITLES[type]||type.replace(/_/g,' ');}
+
+function anomalyBody(st){
+  const mn=selected?.temp_range_min||2, mx=selected?.temp_range_max||8;
+  const temp=(st.normalized_temp_c||st.temp_c||0).toFixed(1);
+  const msgs={
+    'TEMP_BREACH':`Temperature is <b>${temp}°C</b> — outside the safe range of ${mn}–${mx}°C. The vaccine is at risk of spoilage and needs immediate intervention.`,
+    'REEFER_FAILURE':`The refrigeration unit has failed. Temperature: <b>${temp}°C</b> (safe: ${mn}–${mx}°C). An emergency vehicle swap is needed now.`,
+    'TRUCK_STALL':`The transport truck has been stationary for <b>${st.stall_duration_mins||30} minutes</b>. Temperature is still within range — no spoilage risk yet, but the delivery window is at risk.`,
+    'FLIGHT_CANCEL':`The scheduled cargo flight was <b>cancelled</b>. Estimated delay: <b>${fmtHrs(st.delay_hrs||8)}</b>. The vaccine is safely stored — this is a schedule issue, not a temperature emergency.`,
+    'CUSTOMS_HOLD':`Shipment is on hold at customs: <b>${st.hold_reason||'documentation issue'}</b>. Estimated hold time: <b>${fmtHrs(st.hold_duration_est||6)}</b>. Temperature is fine — this is a paperwork delay.`,
+    'SENSOR_SILENCE':`The temperature sensor went offline (battery: <b>${(st.battery_pct||0).toFixed(0)}%</b>). We cannot confirm the temperature. Treating this as a worst-case breach until sensor contact is restored.`,
+    'DOOR_BREACH':`The container door was opened during transit. Outside air temperature is <b>${(st.ambient_temp_c||30).toFixed(1)}°C</b>, which may have disrupted the cold chain. Physical inspection required.`,
+    'NOT_VIABLE':`The shipment has exceeded its maximum safe delivery window. The vaccine can no longer be delivered intact. Emergency resupply from the nearest WHO facility is being activated.`,
+    'UNKNOWN': st.ai_diagnosis
+      ? `&#129302; <b>AI Diagnosis:</b> ${st.ai_diagnosis}<br><span style="color:var(--t3);font-size:11px">${st.ai_reasoning||''}</span>`
+      : `An unclassified anomaly has been detected that does not match any known failure mode. The AI agent is analysing the sensor combination — review the AI analysis below and approve or reject the recommended action.`
+  };
+  return msgs[st.anomaly_type]||st.risk_narrative||'An unexpected anomaly has been detected and requires your attention.';
+}
+
+/* ═══════ ACTION CARDS ═══════ */
+// Defines what actions are relevant per anomaly type.
+// primary:true = the core intervention; always enabled, drives workflow APPROVE.
+// Others are secondary (informational+confirmable in the UI; workflow always runs them on approve).
+const ANOMALY_ACTIONS_DEF={
+  'TEMP_BREACH':[
+    {id:'reroute',   icon:'🚛', title:'Reroute to Cold Storage',          primary:true},
+    {id:'insurance', icon:'📋', title:'File Insurance Claim'},
+    {id:'reschedule',icon:'📅', title:'Reschedule Patient Appointments'},
+    {id:'notify',    icon:'🔔', title:'Notify Destination Hospital'},
+  ],
+  'REEFER_FAILURE':[
+    {id:'swap',      icon:'🚨', title:'Emergency Refrigerated Vehicle Swap', primary:true},
+    {id:'insurance', icon:'📋', title:'File Insurance Claim'},
+    {id:'reschedule',icon:'📅', title:'Reschedule Patient Appointments'},
+    {id:'notify',    icon:'🔔', title:'Notify Destination Hospital'},
+  ],
+  'TRUCK_STALL':[
+    {id:'carrier',   icon:'🚚', title:'Dispatch Alternate Carrier',         primary:true},
+    {id:'reschedule',icon:'📅', title:'Reschedule Patient Appointments'},
+    {id:'notify',    icon:'🔔', title:'Notify Destination Hospital'},
+  ],
+  'FLIGHT_CANCEL':[
+    {id:'flight',    icon:'✈️',  title:'Rebook Next Available Cargo Flight', primary:true},
+    {id:'reschedule',icon:'📅', title:'Reschedule Patient Appointments'},
+    {id:'notify',    icon:'🔔', title:'Notify Hospital & Airline Operations'},
+  ],
+  'CUSTOMS_HOLD':[
+    {id:'broker',    icon:'📜', title:'Escalate to Customs Broker',         primary:true},
+    {id:'notify',    icon:'🔔', title:'Notify Destination Hospital'},
+  ],
+  'SENSOR_SILENCE':[
+    {id:'breach',    icon:'⚠️',  title:'Activate Assumed-Breach Protocol',  primary:true},
+    {id:'insurance', icon:'📋', title:'File Insurance Claim (Precautionary)'},
+    {id:'notify',    icon:'🔔', title:'Notify Destination Hospital'},
+  ],
+  'DOOR_BREACH':[
+    {id:'inspect',   icon:'🔍', title:'Schedule Integrity Inspection',      primary:true},
+    {id:'insurance', icon:'📋', title:'File Insurance Claim'},
+    {id:'notify',    icon:'🔔', title:'Notify Destination Hospital'},
+  ],
+  'NOT_VIABLE':[
+    {id:'resupply',  icon:'🆘', title:'Activate Emergency WHO Resupply',    primary:true},
+    {id:'notify',    icon:'🔔', title:'Notify Hospital & WHO Facility'},
+  ],
+  'UNKNOWN':[
+    {id:'ai_action', icon:'🤖', title:'Execute AI-Recommended Action',       primary:true},
+    {id:'notify',    icon:'🔔', title:'Notify Logistics Supervisor'},
+    {id:'insurance', icon:'📋', title:'File Precautionary Insurance Claim'},
+  ],
+};
+
+// Generates a context-aware description for each action card using live state data.
+function _actionDesc(id, st){
+  const cs = st.cold_storage_location ? st.cold_storage_location.split('(')[0].trim() : 'nearest facility';
+  const hosp = selected?.destination_hospital || 'hospital';
+  const spoilageUSD = ((st.spoilage_prob||0)*50000).toLocaleString('en-US',{maximumFractionDigits:0});
+  const approxPts = Math.max(1, Math.round(((st.time_impact_hrs||st.delay_hrs||2)*3)));
+  const map = {
+    'reroute':   `Divert to: <b>${cs}</b> · ~${fmtHrs(st.detour_time_hrs||st.time_impact_hrs||2)} detour`,
+    'swap':      `Request emergency refrigerated vehicle near current GPS position`,
+    'carrier':   `Dispatch an alternate carrier to resume transport`,
+    'flight':    st.next_viable_flight && st.next_viable_flight!=='NONE_AVAILABLE'
+                   ? `Next viable flight: <b>${st.next_viable_flight}</b>` : `Find next available cargo slot`,
+    'broker':    `Escalate: <b>${st.hold_reason||'documentation issue'}</b> · ~${fmtHrs(st.hold_duration_est||6)} expected`,
+    'breach':    `Treat as worst-case breach per GDP 2013/C 343/01 §9.3`,
+    'inspect':   `Physical container check at next transit stop`,
+    'resupply':  `Contact nearest WHO emergency vaccine facility`,
+    'insurance': `Estimated financial exposure: <b>$${spoilageUSD} USD</b>`,
+    'reschedule':`~<b>${approxPts}</b> appointment(s) at <b>${hosp}</b> need rescheduling`,
+    'notify':    `Send status alert to <b>${hosp}</b> operations team`,
+    'ai_action': st.recommended_action
+                   ? `<b>AI:</b> ${st.recommended_action}`
+                   : `Execute the action recommended by the AI fallback agent`,
+  };
+  return map[id] || '';
+}
+
+// Track which secondary actions the operator unchecked (skipped).
+let _skippedActions = new Set();
+
+function renderActionCards(st){
+  const defs = ANOMALY_ACTIONS_DEF[st.anomaly_type];
+  if(!defs){
+    document.getElementById('rp-actions').innerHTML='';
+    return;
+  }
+  _skippedActions = new Set();
+
+  const cards = defs.map(a=>{
+    const desc = _actionDesc(a.id, st);
+    const badge = a.primary ? '<span class="ac-badge">Required</span>' : '';
+    const checkAttr = a.primary ? 'checked disabled' : 'checked';
+    return `
+      <div class="action-card ${a.primary?'ac-primary':''}" id="acard-${a.id}">
+        <input type="checkbox" class="ac-check" id="achk-${a.id}" ${checkAttr}
+          onchange="toggleActionCard('${a.id}',this.checked)">
+        <span class="ac-icon">${a.icon}</span>
+        <div class="ac-info">
+          <div class="ac-title">${a.title}${badge}</div>
+          <div class="ac-desc">${desc}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  document.getElementById('rp-actions').innerHTML=`
+    <div class="ac-panel-header">&#9889; Recommended Actions — select what to execute</div>
+    <div class="action-cards">${cards}</div>
+    <div class="ac-exec-row">
+      <button class="btn success" style="flex:1" onclick="approveAction()">&#9989; Execute Actions</button>
+      <button class="btn warn" onclick="rejectAction()">&#128065; Monitor Only</button>
+    </div>`;
+}
+
+// Called when operator clicks "What to do next" in the alert feed item.
+// Renders action cards in the bottom panel for review before any execution.
+function showActionCards(){
+  if(!lastState||!lastState.anomaly_type||lastState.anomaly_type==='NOMINAL')return;
+  renderActionCards(lastState);
+  // Scroll the right panel body to the bottom so action cards are visible
+  const body=document.getElementById('rp-body');
+  body.scrollTop=body.scrollHeight;
+}
+
+function toggleActionCard(id, checked){
+  const card = document.getElementById('acard-'+id);
+  if(card) card.classList.toggle('ac-skipped', !checked);
+  if(!checked) _skippedActions.add(id);
+  else _skippedActions.delete(id);
+}
+
+// After execution, mark each action card as done or skipped based on operator choice + workflow result.
+function _finalizeActionCards(res){
+  const defs = ANOMALY_ACTIONS_DEF[lastState?.anomaly_type||''] || [];
+  const resultMap = {
+    'reroute':   res.reroute_confirmed,
+    'swap':      res.reroute_confirmed,
+    'carrier':   res.reroute_confirmed,
+    'flight':    !!res.new_flight_id,
+    'broker':    res.broker_notified,
+    'breach':    true,
+    'inspect':   true,
+    'resupply':  !!res.nearest_who_facility,
+    'insurance': !!res.insurance_doc_url,
+    'reschedule':res.rescheduled_count>0,
+    'notify':    true,
+  };
+  defs.forEach(a=>{
+    const card = document.getElementById('acard-'+a.id);
+    if(!card) return;
+    if(_skippedActions.has(a.id)){
+      card.classList.add('ac-skipped');
+      card.querySelector('.ac-title').innerHTML += ' <span class="ac-badge skipped">Skipped</span>';
+    } else if(resultMap[a.id]){
+      card.classList.add('ac-done');
+      card.querySelector('.ac-badge')?.remove();
+      card.querySelector('.ac-title').innerHTML += ' <span class="ac-badge done">&#10003; Done</span>';
+    }
+  });
+  // Replace exec row with Resume button
+  document.querySelector('.ac-exec-row')?.remove();
+  const resumeRow = document.createElement('div');
+  resumeRow.className='ac-exec-row';
+  resumeRow.innerHTML=`<button class="btn primary" style="flex:1" onclick="resumeAfterAction()">&#9654; Resume Tracking</button>`;
+  document.getElementById('rp-actions').appendChild(resumeRow);
+}
+
+/* ═══════ PROCESS (stream-mode API) ═══════ */
+let threadId=null, journeyStarted=false;
+
+function handleState(st){
+  lastState=st;
+  if(st.error){addFeed('danger','API Error',st.error);playing=false;_updatePlayBtn();return;}
+  if(st._thread_id)threadId=st._thread_id;
+  const r=telemetry[idx]||{};
+  const mn=selected.temp_range_min||2, mx=selected.temp_range_max||8;
+  const temp=st.normalized_temp_c||st.temp_c||0;
+  const ts=(st.timestamp||'').substring(11,16)||String(idx);
+  const leg=(st.leg||'').replace(/_/g,' ');
+  const mode=st.leg_mode||'truck';
+
+  moveVehicle(st.lat||r.lat||0,st.lng||r.lng||0,mode,st.heading||0,st.anomaly_type!=='NOMINAL');
+  addPoint(ts,temp,mn,mx);updateCard(selected.shipment_id,st.alert_class||'NOMINAL');updateTopbar();updateETA(st);
+  document.getElementById('ch-leg').textContent=leg;
+
+  // ── Delivery: stop everything, do NOT schedule another reading ──
+  if(st.shipment_delivered){
+    playing=false;
+    _updatePlayBtn();
+    stopWall();
+    threadId=null;       // block any in-flight setTimeout from firing another request
+    journeyStarted=false;
+    clearReroute();
+    addFeed('success','&#10004; Delivered',
+      `<b>${selected.shipment_id}</b> reached <b>${selected.destination_hospital||'destination'}</b> after ${idx} readings.`+
+      (st.total_accumulated_delay_hrs>0?` Total accumulated delay: <b>${fmtHrs(st.total_accumulated_delay_hrs)}</b>.`:''));
+    updateCard(selected.shipment_id,'DELIVERED');
+    return;
+  }
+
+  // ── NOMINAL: chain next reading via setTimeout only when playing ──
+  const intr=st._interrupt;
+  if(intr&&intr.type==='next_reading'){
+    idx=intr.reading_index;
+    if(st.alert_class==='WATCH'){
+      addFeed('warning','&#9650; Temperature Watch',
+        `Temp <b>${temp.toFixed(1)}°C</b> is approaching the limit of ${mn}–${mx}°C. Monitoring closely.`);
+    }
+    if(playing)setTimeout(sendNextReading,speed);
+    return;
+  }
+
+  // ── Anomaly: stop auto-play, show alert in feed with a "What to do next" button ──
+  // Action cards are NOT shown yet — user must click the button first to review them.
+  if(st.anomaly_type&&st.anomaly_type!=='NOMINAL'){
+    playing=false;
+    _updatePlayBtn();
+    pinAnomaly(st.lat||0,st.lng||0,`${anomalyTitle(st.anomaly_type)} @ ${(st.timestamp||'').substring(11,16)}`);
+    const isTempRelated=TEMP_ANOMALIES.has(st.anomaly_type);
+    const spoilagePart=isTempRelated
+      ?`<br><b>Spoilage Risk:</b> ${((st.spoilage_prob||0)*100).toFixed(0)}% &nbsp;|&nbsp; <b>Buffer:</b> ${fmtHrs(st.buffer_hrs||0)}`:'';
+    const nextActionLine=`<br><span style="color:var(--t2);font-size:11px;margin-top:4px;display:block">&#8594; <b>Next step:</b> ${st.recommended_action||'Review recommended actions'}</span>`;
+    // Show proposed reroute on map so operator can visualise the proposal
+    drawReroutePath(st);
+    addFeed('danger', anomalyTitle(st.anomaly_type),
+      anomalyBody(st)+spoilagePart+nextActionLine,
+      [{l:'&#9654; What to do next', c:'primary', fn:'showActionCards()'}]);
+    return;
+  }
+}
+
+async function startJourney(){
+  if(!selected||inFlight)return;
+  journeyStarted=true;idx=0;inFlight=true;
+  addFeed('info','&#128640; Journey Started',`LangGraph is now monitoring <b>${selected.shipment_id}</b> across ${telemetry.length} telemetry readings.`);
+  try{
+    const st=await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({shipment_id:selected.shipment_id})}).then(x=>x.json());
+    handleState(st);
+  }catch(e){addFeed('danger','Network Error','Could not start shipment: '+e.message);playing=false;_updatePlayBtn();}
+  finally{inFlight=false;}
+}
+
+async function sendNextReading(){
+  // Guard: prevent concurrent calls — this was the root cause of the 2.5x loop
+  if(inFlight)return;
+  if(!threadId||idx>=telemetry.length){
+    playing=false;_updatePlayBtn();stopWall();
+    addFeed('info','Stream Complete',`All ${telemetry.length} readings processed.`);
+    return;
+  }
+  inFlight=true;
+  const reading=telemetry[idx];
+  try{
+    const st=await fetch('/api/next',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({_thread_id:threadId,reading:reading})}).then(x=>x.json());
+    handleState(st);
+  }catch(e){addFeed('danger','Network Error','Lost connection during reading '+idx+': '+e.message);playing=false;_updatePlayBtn();}
+  finally{inFlight=false;}
+}
+
+async function processReading(){
+  if(!journeyStarted){startJourney();return;}
+  sendNextReading();
+}
+
+/* ═══════ MODAL ═══════ */
+function showModal(st){
+  const isTempRelated=TEMP_ANOMALIES.has(st.anomaly_type);
+  // Sub-title: plain text version of the anomaly body (strip HTML)
+  document.getElementById('modal-sub').textContent='See action panel on the right →';
+  const bc=(st.buffer_hrs||0)<5?'red':(st.buffer_hrs||0)<20?'yellow':'green';
+  const delayItem=(st.delay_added_hrs||0)>0
+    ?`<div class="detail-item"><div class="dl">Delay Added</div><div class="dv red">+${fmtHrs(st.delay_added_hrs)}</div></div>`:'';
+  const spoilageItem=isTempRelated?(()=>{
+    const sc=(st.spoilage_prob||0)>.5?'red':(st.spoilage_prob||0)>.2?'yellow':'green';
+    return`<div class="detail-item"><div class="dl">Spoilage Risk</div><div class="dv ${sc}">${((st.spoilage_prob||0)*100).toFixed(1)}%</div></div>`;
+  })():'';
+  document.getElementById('modal-grid').innerHTML=`
+    <div class="detail-item"><div class="dl">Issue</div><div class="dv red">${anomalyTitle(st.anomaly_type)}</div></div>
+    ${spoilageItem}
+    <div class="detail-item"><div class="dl">ETA to Dest</div><div class="dv">${fmtHrs(st.eta_destination_hrs)}</div></div>
+    <div class="detail-item"><div class="dl">Time Buffer</div><div class="dv ${bc}">${fmtHrs(st.buffer_hrs)}</div></div>
+    ${delayItem}
+    <div class="detail-item"><div class="dl">Severity</div>
+      <div class="dv ${st.severity==='CRITICAL'?'red':st.severity==='HIGH'?'yellow':'green'}">${st.severity||'LOW'}</div></div>`;
+  document.getElementById('modal-narrative').textContent=st.risk_narrative||'';
+  // AI fallback block — only visible for UNKNOWN anomalies
+  const aiBlock=document.getElementById('modal-ai-block');
+  if(st.anomaly_type==='UNKNOWN'&&(st.ai_diagnosis||st.ai_reasoning)){
+    document.getElementById('modal-ai-diagnosis').textContent='Diagnosis: '+(st.ai_diagnosis||'');
+    document.getElementById('modal-ai-reasoning').textContent='Reasoning: '+(st.ai_reasoning||'');
+    aiBlock.style.display='block';
+  }else{
+    aiBlock.style.display='none';
+  }
+  document.getElementById('modal-overlay').classList.add('show');
+}
+function hideModal(){document.getElementById('modal-overlay').classList.remove('show');}
+
+/* ═══════ APPROVE / REJECT ═══════ */
+async function approveAction(){
+  hideModal();
+  const skippedList=[..._skippedActions].join(', ');
+  addFeed('success','&#9989; Actions Approved',
+    `Executing LangGraph intervention agents...`+(skippedList?` <span style="color:var(--t3)">(skipped: ${skippedList})</span>`:''));
+
+  const payload={_thread_id:threadId,decision:'APPROVE',approved_by:'dashboard_operator',approved_at:new Date().toISOString()};
+  let res;
+  try{res=await fetch('/api/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(x=>x.json());}
+  catch(e){addFeed('danger','Network Error','Approve call failed: '+e.message);return;}
+
+  lastState=res;updateETA(res);
+
+  // Update map: draw full confirmed reroute path after approval
+  drawReroutePath(res);
+
+  const intr=res._interrupt;
+  if(intr&&intr.type==='next_reading')idx=intr.reading_index;
+
+  // Feed results for non-skipped actions
+  const steps=[];
+  if(res.reroute_confirmed && !_skippedActions.has('reroute')&&!_skippedActions.has('swap')&&!_skippedActions.has('carrier')&&!_skippedActions.has('flight'))
+    steps.push(['success','&#10003; Route Updated','New route confirmed and active.']);
+  if(res.rescheduled_count>0 && !_skippedActions.has('reschedule')){
+    // Extract patient names from notifications_sent if present
+    let patientDetail = `<b>${res.rescheduled_count}</b> appointment(s) at <b>${selected?.destination_hospital||'hospital'}</b> affected.`;
+    try{
+      const notifs=JSON.parse(res.notifications_sent||'[]');
+      const schedMsg=notifs.find(n=>n.includes('Scheduling Desk')||n.includes('appointment'));
+      if(schedMsg){
+        const body=schedMsg.split('|').slice(1).join('|').trim();
+        if(body) patientDetail=body;
+      }
+    }catch{}
+    steps.push(['info','&#128197; Patients Rescheduled', patientDetail]);
+  }
+  if(res.insurance_doc_url && !_skippedActions.has('insurance'))
+    steps.push(['info','&#128196; Insurance Claim Filed',`Ref: <code>${res.insurance_doc_url}</code>`]);
+  if(res.inventory_forecast_updated && !_skippedActions.has('notify')){
+    // Extract inventory note from risk_narrative
+    let invDetail=`${selected?.destination_hospital||'Hospital'} supply forecast adjusted.`;
+    const narr=res.risk_narrative||'';
+    const idx=narr.indexOf('| INVENTORY');
+    if(idx>=0) invDetail=narr.slice(idx+2,idx+180).replace(/\|.*/,'').trim();
+    steps.push(['success','&#128202; Inventory Forecast Updated', invDetail]);
+  }
+  if(res.audit_log_id)
+    steps.push(['success','&#128196; Compliance Log',`<code>${res.audit_log_id}</code> · FDA 21 CFR Part 11`]);
+
+  let i=0;
+  (function next(){
+    if(i<steps.length){addFeed(steps[i][0],steps[i][1],steps[i][2]);i++;setTimeout(next,300);}
+    else{
+      if(!_skippedActions.has('notify')){
+        try{
+          const notifs=JSON.parse(res.notifications_sent||'[]');
+          notifs.forEach((n,k)=>setTimeout(()=>{
+            const parts=n.replace(/^TO:\s*/,'').split('|');
+            addFeed('success','&#128276; Notified',
+              `<b>${parts[0]?.trim()||'Stakeholder'}</b>${parts[1]?': '+parts[1].trim():''}`)
+          },(k+1)*250));
+          // Email sent badge
+          setTimeout(()=>{
+            addFeed('success','&#128231; Email Dispatched',
+              `AI-generated alert sent to <b>jbha0504@umd.edu</b> — subject &amp; body written by Claude Haiku. `+
+              `<span style="color:var(--t3);font-size:11px">Set EMAIL_FROM + EMAIL_PASSWORD env vars to activate real SMTP delivery.</span>`);
+          },(notifs.length+1)*250);
+        }catch{}
+      }
+      setTimeout(()=>{
+        addFeed('info','&#9989; Intervention Complete',
+          `Accumulated delay: <b>${fmtHrs(res.total_accumulated_delay_hrs||0)}</b> · Buffer remaining: <b>${fmtHrs(res.buffer_hrs||0)}</b>`);
+        _finalizeActionCards(res);
+      },steps.length*300+500);
+    }
+  })();
+}
+
+function rejectAction(){
+  hideModal();
+  clearReroute();
+  addFeed('warning','&#128065; Monitoring Only',
+    'No intervention executed. Agent will continue monitoring — anomaly will be re-evaluated on the next reading.');
+  fetch('/api/execute',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({_thread_id:threadId,decision:'REJECT',approved_by:'dashboard_operator',approved_at:new Date().toISOString()})})
+  .then(x=>x.json())
+  .then(res=>{
+    lastState=res;updateETA(res);
+    const intr=res._interrupt;
+    if(intr&&intr.type==='next_reading')idx=intr.reading_index;
+    // Clear action cards and show resume button
+    document.getElementById('rp-actions').innerHTML=
+      `<button class="btn primary" style="width:100%" onclick="resumeAfterAction()">&#9654; Resume Tracking</button>`;
+  })
+  .catch(e=>addFeed('danger','Network Error','Reject call failed: '+e.message));
+}
+
+function resumeAfterAction(){
+  document.getElementById('rp-actions').innerHTML='';
+  if(idx<telemetry.length)togglePlay();
+}
+
+/* ═══════ PLAYBACK ═══════ */
+// No setInterval — readings chain via setTimeout inside handleState.
+// This prevents the double-send that caused the 2.5x journey loop.
+function _updatePlayBtn(){
+  document.getElementById('btn-play').innerHTML=playing?'&#10074;&#10074; Pause':'&#9654; Play';
+  document.getElementById('btn-play').classList.toggle('primary',!playing);
+}
+function _stopPlay(){playing=false;stopWall();_updatePlayBtn();}
+
+function togglePlay(){
+  if(playing){
+    _stopPlay();
+  } else {
+    playing=true;startWall();_updatePlayBtn();
+    processReading(); // kick off one reading; handleState chains the rest
+  }
+}
+function stepForward(){if(playing)_stopPlay();processReading();}
+function setSpeed(ms){speed=parseInt(ms);}
+function resetPlayback(){if(playing)_stopPlay();if(selected)selectShipment(selected.shipment_id);}
+
+init();
+</script>
+</body>
+</html>
