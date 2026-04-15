@@ -74,40 +74,11 @@ This system simulates a real-world pharmaceutical logistics control tower monito
 
 ## 🏗️ Architecture
 
-```
-IoT Telemetry
-     │
-     ▼
-┌─────────────────────────────────────────────────────┐
-│                  LangGraph Workflow                  │
-│                                                     │
-│  ingest_telemetry                                   │
-│       │                                             │
-│       ├──► detect_anomaly      ┐                   │
-│       ├──► detect_truck_stall  │ parallel           │
-│       ├──► monitor_flight      │ fan-out            │
-│       └──► monitor_customs     ┘                   │
-│                 │                                   │
-│           score_risk                                │
-│                 │                                   │
-│     check_viability_budget                          │
-│                 │                                   │
-│       check_buffer_warning                          │
-│                 │                                   │
-│      orchestrate_decision  ◄── debounce + cooldown  │
-│             │                                       │
-│    ┌────────┴────────┐                              │
-│  NOMINAL        ANOMALY                             │
-│    │                 │                              │
-│ continue     [action agent]  ← Claude AI            │
-│ monitoring        │                                 │
-│    │         human_approval  ← interrupt()          │
-│    │              │                                 │
-│    │         execute_reroute                        │
-│    │              │                                 │
-│    └──────── wait_for_next_reading ◄── loop         │
-└─────────────────────────────────────────────────────┘
-```
+![System Architecture](Plan/cargo_monitor_architecture.svg)
+
+### LangGraph Workflow
+
+![LangGraph Workflow](cargo_monitor_workflow.png)
 
 ---
 
