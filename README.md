@@ -7,25 +7,7 @@
 ## 🎬 Demo Video
 
 <!-- Add demo video here -->
-> **📹 Video coming soon** — Replace this block with your demo video embed.
->
-> ```
-> [Demo Video Placeholder]
-> Record a walkthrough of SHP-003 showing all 8 anomaly types firing in sequence.
-> Upload to YouTube/Loom and embed here:
->
-> [![Demo Video](https://img.youtube.com/vi/YOUR_VIDEO_ID/0.jpg)](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)
-> ```
-
----
-
-## 🌐 Live Demo (No Setup Required)
-
-Try the interactive demo directly in your browser — no Python, no API key, no installation:
-
-**[▶ Launch Live Demo](https://pranavshashidhara.github.io/AI_cargo_monitoring/)**
-
-> All 10 shipments are available. **Start with SHP-003** to see all 8 anomaly types (Temperature Breach, Door Breach, Flight Cancellation, Sensor Silence, Reefer Failure, Customs Hold, Truck Stall, Road Accident) fire in a single journey.
+https://github.com/user-attachments/assets/7c0ee2b4-cca3-48f2-8a2a-931de87f6c89
 
 ---
 
