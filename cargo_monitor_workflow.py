@@ -411,8 +411,8 @@ Respond ONLY with valid JSON, no markdown:
         stall_cause = parsed.get("cause", stall_cause)
         estimated_duration_mins = int(parsed.get("estimated_duration_mins", 30))
         estimated_duration_mins = max(5, min(estimated_duration_mins, 480))  # clamp 5min–8hrs
-    except Exception:
-        pass  # use fallback values
+    except Exception as e:
+        print(f"  [warn] Claude stall diagnosis unavailable: {e}")
 
     return {
         "stall_confirmed": True,
@@ -506,8 +506,8 @@ Respond ONLY with valid JSON, no markdown:
         parsed = json.loads(raw)
         estimated_hrs = float(parsed.get("estimated_duration_hrs", 6.0))
         estimated_hrs = max(0.5, min(estimated_hrs, 72.0))  # clamp 30min–3days
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [warn] Claude customs estimation unavailable: {e}")
 
     return {
         "hold_reason": reason,
@@ -720,7 +720,8 @@ Respond ONLY with valid JSON, no markdown:
         cost   = float(parsed.get("estimated_time_hrs", fallback_cost))
         cost   = max(0.0, min(cost, 24.0))  # sanity clamp
 
-    except Exception:
+    except Exception as e:
+        print(f"  [warn] Claude viability budget estimation unavailable: {e}")
         action = fallback_action
         cost   = fallback_cost
 
@@ -1144,8 +1145,8 @@ Respond ONLY with valid JSON, no markdown:
         missing = parsed.get("missing_documents", missing)
         response_hrs = float(parsed.get("estimated_response_hrs", response_hrs))
         response_hrs = max(0.25, min(response_hrs, 48.0))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [warn] Claude compliance estimation unavailable: {e}")
 
     return {
         "escalation_contact": f"{broker['name']}: {broker['contact']} ({broker['email']})",
@@ -1212,8 +1213,8 @@ Respond ONLY with valid JSON, no markdown:
         spoilage = float(parsed.get("spoilage_probability", 0.70))
         spoilage = max(0.0, min(spoilage, 1.0))
         narrative_detail = parsed.get("reasoning", narrative_detail)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [warn] Claude sensor-silence assessment unavailable: {e}")
 
     return {
         "anomaly_type": "SENSOR_SILENCE",
@@ -1281,8 +1282,8 @@ Respond ONLY with valid JSON, no markdown:
         spoilage = float(parsed.get("spoilage_probability", 0.60))
         spoilage = max(0.0, min(spoilage, 1.0))
         narrative_detail = parsed.get("reasoning", narrative_detail)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [warn] Claude door-breach assessment unavailable: {e}")
 
     return {
         "anomaly_type": "DOOR_BREACH",
@@ -1521,10 +1522,10 @@ def _generate_and_send_email(state: CargoState, extra_context: str = "") -> bool
       EMAIL_SMTP_SERVER (default smtp.gmail.com)
       EMAIL_SMTP_PORT   (default 587)
 
-    Always sends to jbha0504@umd.edu.
+    Sends to the address in ALERT_EMAIL env var (or falls back to EMAIL_FROM).
     Returns True if the email was sent successfully.
     """
-    RECIPIENT = "jbha0504@umd.edu"
+    RECIPIENT = os.environ.get("ALERT_EMAIL", os.environ.get("EMAIL_FROM", ""))
 
     smtp_from   = os.environ.get("EMAIL_FROM", "")
     smtp_pass   = os.environ.get("EMAIL_PASSWORD", "")

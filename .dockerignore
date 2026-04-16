@@ -1,0 +1,16 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.env
+venv/
+env/
+*.md
+.DS_Store
+.gitignore
+Plan/
+cargo_monitor_workflow.png
+cargo_monitor_mermaid.md
+cargo_monitor_erd.html
+langgraph_state_evolution.svg

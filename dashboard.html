@@ -246,6 +246,7 @@ function getRouteProfile(){
 let chart;
 
 function fmtHrs(h){if(h==null||isNaN(h))return'--';if(h>=48)return Math.floor(h/24)+'d '+Math.round(h%24)+'h';if(h>=1)return h.toFixed(1)+'h';return Math.round(h*60)+'m';}
+function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=String(s);return d.innerHTML;}
 
 /* ═══════ INIT ═══════ */
 async function init(){shipments=await fetch('/api/shipments').then(r=>r.json());renderSidebar();initMap();initChart();}
@@ -478,10 +479,10 @@ function anomalyBody(st){
     'DOOR_BREACH':`The container door was opened during transit. Outside air temperature is <b>${(st.ambient_temp_c||30).toFixed(1)}°C</b>, which may have disrupted the cold chain. Physical inspection required.`,
     'NOT_VIABLE':`The shipment has exceeded its maximum safe delivery window. The vaccine can no longer be delivered intact. Emergency resupply from the nearest WHO facility is being activated.`,
     'UNKNOWN': st.ai_diagnosis
-      ? `&#129302; <b>AI Diagnosis:</b> ${st.ai_diagnosis}<br><span style="color:var(--t3);font-size:11px">${st.ai_reasoning||''}</span>`
+      ? `&#129302; <b>AI Diagnosis:</b> ${esc(st.ai_diagnosis)}<br><span style="color:var(--t3);font-size:11px">${esc(st.ai_reasoning||'')}</span>`
       : `An unclassified anomaly has been detected that does not match any known failure mode. The AI agent is analysing the sensor combination — review the AI analysis below and approve or reject the recommended action.`
   };
-  return msgs[st.anomaly_type]||st.risk_narrative||'An unexpected anomaly has been detected and requires your attention.';
+  return msgs[st.anomaly_type]||esc(st.risk_narrative)||'An unexpected anomaly has been detected and requires your attention.';
 }
 
 /* ═══════ ACTION CARDS ═══════ */
@@ -905,7 +906,7 @@ async function approveAction(){
           // Email sent badge
           setTimeout(()=>{
             addFeed('success','&#128231; Email Dispatched',
-              `AI-generated alert sent to <b>jbha0504@umd.edu</b> — subject &amp; body written by Claude Haiku. `+
+              `AI-generated alert sent to <b>configured recipient</b> — subject &amp; body written by Claude Haiku. `+
               `<span style="color:var(--t3);font-size:11px">Set EMAIL_FROM + EMAIL_PASSWORD env vars to activate real SMTP delivery.</span>`);
           },(notifs.length+1)*250);
         }catch{}

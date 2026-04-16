@@ -203,7 +203,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        MAX_BODY = 1024 * 1024
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self.send_error(400, "Invalid Content-Length")
+            return
+        if length > MAX_BODY:
+            self.send_error(413, "Payload too large")
+            return
+        body = json.loads(self.rfile.read(length))
         path = urlparse(self.path).path
         try:
             if path == "/api/start":
@@ -217,7 +226,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 self.send_error(404)
         except Exception as e:
-            self._json({"error": str(e), "trace": tb.format_exc()})
+            print(f"  [error] {e}\n{tb.format_exc()}")
+            self._json({"error": "Internal server error"})
 
     def _json(self, data):
         payload = json.dumps(data, default=str).encode()
@@ -228,7 +238,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _serve_file(self, filepath, ctype):
-        with open(filepath, "rb") as f:
+        resolved = Path(filepath).resolve()
+        if not str(resolved).startswith(str(ROOT.resolve())):
+            self.send_error(403)
+            return
+        if not resolved.is_file():
+            self.send_error(404)
+            return
+        with open(resolved, "rb") as f:
             content = f.read()
         self.send_response(200)
         self.send_header("Content-Type", f"{ctype}; charset=utf-8")
